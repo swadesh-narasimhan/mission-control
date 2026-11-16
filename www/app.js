@@ -5,7 +5,7 @@
  * when nothing moved. */
 'use strict';
 (function () {
-  const APP_VERSION = '1.2.1';
+  const APP_VERSION = '1.3.0';
   const SLIDE_MS = 520;
   const LONGPRESS_MS = 650;
 
@@ -144,6 +144,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
 ° 01100 10010 10010 01100 00000 00000 00000
 ▲ 00000 00100 00100 01110 01110 11111 00000
 ▼ 00000 11111 01110 01110 00100 00100 00000
+▶ 10000 11000 11100 11110 11100 11000 10000
 ♪ 00111 00101 00100 00100 01100 11100 01000
 ₹ 11111 00100 11111 00100 11000 00110 00001
 • 00000 00000 01110 01110 01110 00000 00000
@@ -518,7 +519,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
             const lm = /\[([A-Za-z]+)\]/.exec(name);
             if (lm) { lang = lm[1]; name = name.replace(lm[0], ''); }
             if (/original (motion picture )?(soundtrack|background score)/i.test(name)) type = 'SOUNDTRACK';
-            items.push({ t: Date.parse(r.releaseDate), title: name.replace(/\s+/g, ' ').trim(), artist: r.artistName || '', type, film, lang });
+            items.push({ id: r.collectionId, art: r.artworkUrl100 || r.artworkUrl60 || '', t: Date.parse(r.releaseDate), title: name.replace(/\s+/g, ' ').trim(), artist: r.artistName || '', type, film, lang });
           }
         }
         items.sort((a, b) => b.t - a.t);
@@ -531,6 +532,8 @@ _ 00000 00000 00000 00000 00000 00000 11111
     const c = LS.get(CK + k, null);
     ST[k] = { data: c ? c.data : null, ts: c ? c.ts : 0, fails: 0, err: '', next: c ? c.ts + SRC[k].every : 0, busy: false, tried: false, ver: 0 };
   }
+
+  { const rd = ST.rel.data; if (rd && rd.items && rd.items.length && !rd.items[0].id) ST.rel.next = 0; } // pre-1.3 cache: no artwork ids
 
   async function fetchWithTimeout(url, ms, asText) {
     const ac = typeof AbortController === 'function' ? new AbortController() : null;
@@ -1472,31 +1475,347 @@ _ 00000 00000 00000 00000 00000 00000 11111
   }
 
   /* ---------- 6. new releases (iTunes catalogue) ---------- */
+  /* Cover art: Apple artwork (CORS-enabled) dithered onto the dot grid (Floyd-Steinberg),
+     16x16 for the list and 32x32 for the deck; cached in localStorage so it survives offline. */
+  const ART_KEY = 'mc.art.v1';
+  const artStore = LS.get(ART_KEY, {});
+  const artMem = new Map(), artPending = new Set();
+  let artVer = 0;
+  const packBits = (a) => {
+    const b = new Uint8Array(Math.ceil(a.length / 8)); let out = '';
+    for (let i = 0; i < a.length; i++) if (a[i]) b[i >> 3] |= 1 << (i & 7);
+    for (const x of b) out += String.fromCharCode(x);
+    return btoa(out);
+  };
+  const unpackBits = (str, n) => {
+    const raw = atob(str), a = new Uint8Array(n * n);
+    for (let i = 0; i < a.length; i++) a[i] = (raw.charCodeAt(i >> 3) >> (i & 7)) & 1;
+    return a;
+  };
+  function ditherImg(img, n) {
+    const c = mkCanvas(n, n), g = c.getContext('2d', { willReadFrequently: true });
+    g.imageSmoothingQuality = 'high';
+    g.drawImage(img, 0, 0, n, n);
+    const px = g.getImageData(0, 0, n, n).data, v = new Float32Array(n * n);
+    let lo = 1, hi = 0;
+    for (let i = 0; i < n * n; i++) {
+      const l = (0.2126 * px[i * 4] + 0.7152 * px[i * 4 + 1] + 0.0722 * px[i * 4 + 2]) / 255;
+      v[i] = l; if (l < lo) lo = l; if (l > hi) hi = l;
+    }
+    const span = Math.max(0.2, hi - lo); // stretch contrast so dark covers still read,
+    let mean = 0;                        // then darken mid-tones: light-on-black wants sparse dots
+    for (let i = 0; i < v.length; i++) { v[i] = (v[i] - lo) / span; mean += v[i]; }
+    mean /= v.length;
+    const gam = Math.max(1.2, Math.min(2.0, 1 + mean * 1.6));
+    for (let i = 0; i < v.length; i++) v[i] = Math.pow(v[i], gam);
+    const out = new Uint8Array(n * n);
+    for (let y = 0; y < n; y++) {
+      for (let x = 0; x < n; x++) {
+        const i = y * n + x, o = v[i], nv = o >= 0.5 ? 1 : 0, e = o - nv;
+        out[i] = nv;
+        if (x + 1 < n) v[i + 1] += (e * 7) / 16;
+        if (y + 1 < n) { if (x > 0) v[i + n - 1] += (e * 3) / 16; v[i + n] += (e * 5) / 16; if (x + 1 < n) v[i + n + 1] += e / 16; }
+      }
+    }
+    return out;
+  }
+  function coverArt(it, n) { // dot bitmap, or null while it loads
+    if (!it || !it.id) return null;
+    let rec = artMem.get(it.id);
+    if (!rec && artStore[it.id]) {
+      try { rec = { 16: unpackBits(artStore[it.id][0], 16), 32: unpackBits(artStore[it.id][1], 32) }; artMem.set(it.id, rec); } catch (e) { rec = null; }
+    }
+    if (rec) return rec[n];
+    if (it.art && !artPending.has(it.id) && navigator.onLine !== false) {
+      artPending.add(it.id);
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        try {
+          const r2 = { 16: ditherImg(img, 16), 32: ditherImg(img, 32) };
+          artMem.set(it.id, r2);
+          artStore[it.id] = [packBits(r2[16]), packBits(r2[32])];
+          const keys = Object.keys(artStore);
+          if (keys.length > 40) for (const k of keys.slice(0, keys.length - 40)) delete artStore[k];
+          LS.set(ART_KEY, artStore);
+          artVer++; forceDraw = true;
+        } catch (e) { /* undecodable: keep the empty grid */ }
+        artPending.delete(it.id);
+      };
+      img.onerror = () => setTimeout(() => artPending.delete(it.id), 300e3);
+      img.src = it.art.replace(/\/\d+x\d+bb\./, '/200x200bb.');
+    }
+    return null;
+  }
+  /* Unlit cells are faint ghost dots, exactly like an unlit VFD matrix. */
+  function drawArt(g, bits, n, x, y, p, color) {
+    const gs = sprite(color, p, 'ghost'), go = gs.width / 2 - p / 2;
+    for (let i = 0; i < n * n; i++) if (!bits || !bits[i]) g.drawImage(gs, x + (i % n) * p - go, y + ((i / n) | 0) * p - go);
+    if (!bits) return;
+    const sp = sprite(color, p, 'glow'), o = sp.width / 2 - p / 2;
+    const prev = g.globalCompositeOperation; g.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < n * n; i++) if (bits[i]) g.drawImage(sp, x + (i % n) * p - o, y + ((i / n) | 0) * p - o);
+    g.globalCompositeOperation = prev;
+  }
+  const timgCache = new Map();
+  function textImg(str, p, color, ghost) { // cached text bitmap for things redrawn every frame
+    const key = str + '|' + p + '|' + color + '|' + !!ghost;
+    let c = timgCache.get(key);
+    if (!c) {
+      if (timgCache.size > 160) timgCache.clear();
+      c = mkCanvas(tw(norm(str).length, p) + p * 4, th(p) + p * 4);
+      text(c.getContext('2d'), str, p * 2, p * 2, p, color, 'left', ghost);
+      timgCache.set(key, c);
+    }
+    return c;
+  }
+  const mmss = (sec) => pad2(Math.floor(sec / 60)) + ':' + pad2(Math.floor(sec % 60));
+
+  /* ---------- preview deck: 30 s Apple preview + live spectrum analyser ---------- */
+  const player = { state: 'idle', idx: -1, item: null, audio: null, ctx: null, an: null, bins: null, err: '', started: 0 };
+  const previewCache = new Map();
+  const NB = 16, bandLv = new Float32Array(NB), peakLv = new Float32Array(NB), peakT = new Float64Array(NB);
+  let lastDecay = 0;
+  async function previewUrlFor(it) {
+    if (previewCache.has(it.id)) return previewCache.get(it.id);
+    const j = await fetchWithTimeout('https://itunes.apple.com/lookup?entity=song&limit=50&country=in&id=' + it.id, 12e3);
+    const tr = ((j && j.results) || []).filter((r) => r.wrapperType === 'track' && r.previewUrl)
+      .sort((a, b) => (a.discNumber || 1) - (b.discNumber || 1) || (a.trackNumber || 0) - (b.trackNumber || 0))[0];
+    if (!tr) throw new Error('NO PREVIEW');
+    previewCache.set(it.id, tr.previewUrl);
+    return tr.previewUrl;
+  }
+  function ensureAudio() {
+    if (!player.audio) {
+      const a = new Audio();
+      a.crossOrigin = 'anonymous'; // previews send CORS headers, so the analyser can read them
+      a.preload = 'auto';
+      a.addEventListener('ended', () => stopPreview());
+      a.addEventListener('error', () => {
+        if (player.state === 'loading' || player.state === 'playing') { player.state = 'error'; player.err = 'CANNOT PLAY'; forceDraw = true; setTimeout(() => { if (player.state === 'error') stopPreview(); }, 6000); }
+      });
+      player.audio = a;
+    }
+    if (!player.ctx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (AC) {
+        player.ctx = new AC();
+        const src = player.ctx.createMediaElementSource(player.audio);
+        player.an = player.ctx.createAnalyser();
+        player.an.fftSize = 2048; player.an.smoothingTimeConstant = 0.55;
+        player.an.minDecibels = -90; player.an.maxDecibels = -22;
+        src.connect(player.an); player.an.connect(player.ctx.destination);
+        player.bins = new Uint8Array(player.an.frequencyBinCount);
+      }
+    }
+  }
+  function stopAudio() {
+    const a = player.audio; if (!a) return;
+    try { a.pause(); } catch (e) { /* ignore */ }
+    a.removeAttribute('src');
+    try { a.load(); } catch (e) { /* ignore */ }
+  }
+  function stopPreview() {
+    if (player.state === 'idle') return;
+    stopAudio();
+    Object.assign(player, { state: 'idle', item: null, idx: -1, err: '' });
+    bandLv.fill(0); peakLv.fill(0);
+    holdUntil = Date.now() + 8000; dwellAcc = 0; forceDraw = true; // linger on the list briefly
+  }
+  async function playRelease(idx) {
+    const d = ST.rel.data, it = d && d.items[idx];
+    if (!it) return;
+    const pi = pages.indexOf('releases');
+    if (pi < 0) return;
+    if (pages[trans ? trans.to : cur] !== 'releases') goTo(pi);
+    stopAudio();
+    Object.assign(player, { state: 'loading', idx, item: it, err: '', started: performance.now() });
+    bandLv.fill(0); peakLv.fill(0);
+    holdUntil = Number.MAX_SAFE_INTEGER; forceDraw = true;
+    try {
+      const url = await previewUrlFor(it);
+      if (player.item !== it) return;
+      ensureAudio();
+      if (player.ctx && player.ctx.state === 'suspended') { try { await player.ctx.resume(); } catch (e) { /* needs a tap */ } }
+      if (player.ctx && player.ctx.state !== 'running') { const e = new Error('tap'); e.name = 'NotAllowedError'; throw e; }
+      player.audio.src = url;
+      await player.audio.play();
+      if (player.item !== it) return;
+      player.state = 'playing'; player.started = performance.now(); forceDraw = true;
+    } catch (e) {
+      if (player.item !== it) return;
+      if (e && e.name === 'NotAllowedError') player.state = 'armed'; // browser wants a tap first
+      else {
+        player.state = 'error'; player.err = shortErr(e);
+        setTimeout(() => { if (player.item === it && player.state === 'error') stopPreview(); }, 6000);
+      }
+      forceDraw = true;
+    }
+  }
+  function readSpectrum(ts, seg) {
+    if (player.state === 'playing' && player.an) {
+      player.an.getByteFrequencyData(player.bins);
+      const ny = player.ctx.sampleRate / 2, nb = player.bins.length;
+      for (let b = 0; b < NB; b++) { // log-spaced bands, 40 Hz - 16 kHz
+        const f0 = 40 * Math.pow(400, b / NB), f1 = 40 * Math.pow(400, (b + 1) / NB);
+        const i0 = Math.min(nb - 1, Math.floor((f0 / ny) * nb)), i1 = Math.max(i0 + 1, Math.ceil((f1 / ny) * nb));
+        let m = 0;
+        for (let i = i0; i < i1 && i < nb; i++) if (player.bins[i] > m) m = player.bins[i];
+        bandLv[b] = Math.round((m / 255) * seg);
+        if (bandLv[b] >= peakLv[b]) { peakLv[b] = bandLv[b]; peakT[b] = ts; }
+      }
+    } else bandLv.fill(0);
+    if (ts - lastDecay > 70) { // peak-hold markers fall one segment at a time
+      lastDecay = ts;
+      for (let b = 0; b < NB; b++) if (ts - peakT[b] > 450 && peakLv[b] > bandLv[b]) peakLv[b]--;
+    }
+  }
+  const segCache = new Map();
+  function segImg(wd, ht, color, lit) {
+    const key = wd + '|' + ht + '|' + color + '|' + lit;
+    let c = segCache.get(key);
+    if (!c) {
+      const m = lit ? Math.ceil(ht * 0.9) : 0, [r, g0, b] = rgb(color);
+      c = mkCanvas(wd + m * 2, ht + m * 2);
+      const g = c.getContext('2d');
+      if (lit) { g.shadowColor = color; g.shadowBlur = ht * 0.9; g.fillStyle = color; }
+      else g.fillStyle = `rgba(${r},${g0},${b},0.08)`;
+      g.fillRect(m, m, wd, ht);
+      if (lit) { g.shadowBlur = 0; g.fillStyle = 'rgba(255,255,255,0.18)'; g.fillRect(m, m, wd, Math.max(1, ht * 0.35)); }
+      segCache.set(key, c);
+    }
+    return c;
+  }
+  function deckGeom(w, h) {
+    const pad = L.pad, p1 = L.s1, bottom = h - (LH * p1 * 2 + pad);
+    const G = { p1, bottom, pn: 30 };
+    if (L.portrait) {
+      G.ap = Math.max(3, Math.floor(Math.min((w - pad * 2) * 0.62, bottom * 0.36) / 32));
+      G.titleP = L.s3; G.cp = Math.round(L.s3 * 1.3);
+      G.tx = pad; G.tw = w - pad * 2;
+      let y = 0;
+      G.hy = y; y += LH * p1 + pad * 0.5;
+      G.ax = Math.round((w - G.ap * 32) / 2); G.ay = y; y += G.ap * 32 + pad;
+      G.titleY = y; y += LH * G.titleP;
+      G.artistY = y; y += LH * L.s2;
+      G.filmY = y; y += LH * p1 + pad * 0.5;
+      G.counterY = y; y += th(G.cp) + pad * 0.7;
+      G.progY = y; y += p1 * 2 + pad;
+      G.sy = y; G.sh = Math.min(bottom - y - pad, Math.round(G.tw * 0.55));
+      const shift = Math.max(0, Math.round((bottom - (G.sy + G.sh)) / 2));
+      for (const k of ['hy', 'ay', 'titleY', 'artistY', 'filmY', 'counterY', 'progY', 'sy']) G[k] += shift;
+      G.sx = pad; G.sw = G.tw;
+    } else {
+      G.ap = Math.max(3, Math.floor((bottom - pad) / 32));
+      G.ax = pad; G.ay = Math.max(Math.round(pad / 2), Math.round((bottom - G.ap * 32) / 2));
+      G.titleP = L.s2; G.cp = L.s2 + Math.round(L.s1 * 0.75);
+      G.tx = G.ax + G.ap * 32 + pad * 2; G.tw = w - G.tx - pad;
+      let y = G.ay;
+      G.hy = y; y += LH * p1 + pad * 0.3;
+      G.titleY = y; y += LH * G.titleP;
+      G.artistY = y; y += LH * p1;
+      G.filmY = y; y += LH * p1 + pad * 0.5;
+      G.counterY = y; y += th(G.cp) + pad * 0.6;
+      G.progY = y; y += p1 * 2 + pad * 0.8;
+      G.sx = G.tx; G.sy = y; G.sw = G.tw; G.sh = Math.max(p1 * 12, G.ay + G.ap * 32 - y);
+    }
+    G.hx = G.tx;
+    G.seg = Math.max(6, Math.min(14, Math.floor(G.sh / (p1 * 2.8))));
+    G.cellH = G.sh / G.seg; G.segH = Math.max(2, Math.round(G.cellH * 0.62));
+    G.bandW = G.sw / NB; G.barW = Math.max(3, Math.round(G.bandW * 0.72));
+    G.pd = Math.min(Math.floor(G.tw / G.pn), p1 * 3);
+    return G;
+  }
+  function drawDeck(g, w, h, now) {
+    const it = player.item, G = deckGeom(w, h), p1 = L.s1;
+    statusLine(g, w, h, 'APPLE MUSIC PREVIEW · 30 SEC', { text: player.state === 'armed' ? 'TAP TO PLAY' : 'TAP TO STOP', color: PAL.dim });
+    drawArt(g, coverArt(it, 32), 32, G.ax, G.ay, G.ap, PAL.main);
+    const head = player.state === 'loading' ? 'LOADING' : player.state === 'armed' ? 'TAP TO PLAY' : player.state === 'error' ? 'NO PREVIEW · ' + player.err : 'PREVIEW';
+    fitText(g, head, G.hx + 2 * 6 * p1, G.hy, G.tw - 2 * 6 * p1, p1, player.state === 'error' ? PAL.warn : PAL.accent);
+    if (tw(norm(it.title).length, G.titleP) <= G.tw) text(g, it.title, G.tx, G.titleY, G.titleP, PAL.main);
+    fitText(g, it.artist, G.tx, G.artistY, G.tw, L.portrait ? L.s2 : p1, PAL.accent);
+    const sub = [it.film ? 'FROM ' + it.film : '', it.type + (it.lang ? ' · ' + it.lang : '')].filter(Boolean).join(' · ');
+    text(g, clip(sub, Math.floor((G.tw + p1) / (6 * p1))), G.tx, G.filmY, p1, PAL.dim);
+    text(g, '/ 00:30', G.tx + tw(5, G.cp) + p1 * 3, G.counterY + th(G.cp) - th(p1), p1, PAL.dim);
+    const gs = sprite(PAL.main, p1, 'ghost');
+    for (let i = 0; i < G.pn; i++) g.drawImage(gs, G.tx + i * G.pd - gs.width / 2 + p1 / 2, G.progY - gs.height / 2 + p1 / 2);
+    const off = segImg(G.barW, G.segH, PAL.main, false);
+    for (let b = 0; b < NB; b++) {
+      const x = G.sx + b * G.bandW + (G.bandW - G.barW) / 2;
+      for (let k = 0; k < G.seg; k++) g.drawImage(off, Math.round(x), Math.round(G.sy + G.sh - (k + 1) * G.cellH + (G.cellH - G.segH) / 2));
+    }
+  }
+  function dynDeck(g, w, h, now, ts) {
+    if (player.state === 'idle' || !player.item) return;
+    const G = deckGeom(w, h), p1 = L.s1, a = player.audio, playing = player.state === 'playing';
+    if (playing || Math.floor(ts / 500) % 2) g.drawImage(textImg('▶', p1, PAL.accent), G.hx - p1 * 2, G.hy - p1 * 2);
+    const title = norm(player.item.title);
+    if (tw(title.length, G.titleP) > G.tw) { // marquee for long titles
+      const im = textImg(title + '     ', G.titleP, PAL.main), cyc = (title.length + 5) * 6 * G.titleP;
+      const off = Math.max(0, ((ts - player.started - 1500) * G.titleP * 10) / 1000) % cyc;
+      g.save(); g.beginPath(); g.rect(G.tx, G.titleY - G.titleP, G.tw, th(G.titleP) + G.titleP * 2); g.clip();
+      g.drawImage(im, Math.round(G.tx - off - G.titleP * 2), G.titleY - G.titleP * 2);
+      g.drawImage(im, Math.round(G.tx - off + cyc - G.titleP * 2), G.titleY - G.titleP * 2);
+      g.restore();
+    }
+    const el = playing && a ? a.currentTime || 0 : 0;
+    const dur = a && isFinite(a.duration) && a.duration > 0 ? a.duration : 30;
+    g.drawImage(textImg(mmss(el), G.cp, PAL.main, true), G.tx - G.cp * 2, G.counterY - G.cp * 2);
+    const lit = Math.min(G.pn, Math.floor((el / dur) * G.pn + 1e-6));
+    if (lit) {
+      const sp = sprite(PAL.main, p1, 'glow');
+      g.globalCompositeOperation = 'lighter';
+      for (let i = 0; i < lit; i++) g.drawImage(sp, G.tx + i * G.pd - sp.width / 2 + p1 / 2, G.progY - sp.height / 2 + p1 / 2);
+      g.globalCompositeOperation = 'source-over';
+    }
+    readSpectrum(ts, G.seg);
+    const hot = Math.ceil(G.seg * 0.8);
+    const on = segImg(G.barW, G.segH, PAL.main, true), onHot = segImg(G.barW, G.segH, PAL.warn, true);
+    const m = (on.width - G.barW) / 2;
+    for (let b = 0; b < NB; b++) {
+      const x = Math.round(G.sx + b * G.bandW + (G.bandW - G.barW) / 2 - m);
+      const yAt = (k) => Math.round(G.sy + G.sh - (k + 1) * G.cellH + (G.cellH - G.segH) / 2 - m);
+      for (let k = 0; k < bandLv[b]; k++) g.drawImage(k >= hot ? onHot : on, x, yAt(k));
+      const pk = peakLv[b] - 1;
+      if (pk >= 0 && pk >= bandLv[b]) g.drawImage(pk >= hot ? onHot : on, x, yAt(pk));
+    }
+  }
+
+  /* ---------- 6. new releases list ---------- */
+  let relHits = [];
   function drawReleases(g, w, h, now) {
+    if (player.state !== 'idle' && player.item) { relHits = []; drawDeck(g, w, h, now); return; }
+    relHits = [];
     const st = status('rel', now), d = ST.rel.data;
-    const bottom = statusLine(g, w, h, 'APPLE MUSIC / ITUNES CATALOGUE', st);
+    const bottom = statusLine(g, w, h, 'APPLE MUSIC · TAP A RELEASE TO PREVIEW', st);
     if (!d || !d.items.length) { centerMsg(g, w, bottom, ST.rel.fails ? 'NO DATA' : 'LOADING', ST.rel.err || 'SET ARTISTS IN SETTINGS'); return; }
     const ncol = L.portrait ? 1 : 2;
     const colW = (w - L.pad * (ncol + 1)) / ncol;
     const pT = L.s2, pS = L.s1;
-    const tCols = Math.floor((colW + pT) / (6 * pT)), sCols = Math.floor((colW + pS) / (6 * pS));
+    const ap = Math.max(3, Math.floor((LH * pS * 3 + LH * pT - L.pad * 0.25) / 16));
+    const artW = ap * 16, tx0 = artW + L.pad;
+    const tCols = Math.floor((colW - tx0 + pT) / (6 * pT)), sCols = Math.floor((colW - tx0 + pS) / (6 * pS));
     let col = 0, y = L.pad;
-    for (const it of d.items) {
-      const age = now - it.t;
+    for (let idx = 0; idx < d.items.length; idx++) {
+      const it = d.items[idx], age = now - it.t;
       const tag = it.t > now ? 'COMING ' : age < 7 * 864e5 ? 'NEW ' : '';
       const date = new Date(it.t).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: age > 300 * 864e5 ? 'numeric' : undefined });
       const tl = wrap(it.title, tCols, 2);
       const sub2 = [it.film ? 'FROM ' + it.film : '', it.type + (it.lang ? ' · ' + it.lang : '')].filter(Boolean).join(' · ');
-      const ih = LH * pS + tl.length * LH * pT + 2 * LH * pS + L.pad * 0.7;
-      if (y + ih > bottom) { col++; y = L.pad; if (col >= ncol) break; }
+      const textH = LH * pS + tl.length * LH * pT + 2 * LH * pS;
+      const ih = Math.max(textH, artW) + L.pad * 0.8;
+      if (y + ih - L.pad * 0.8 > bottom) { col++; y = L.pad; if (col >= ncol) break; }
       const x = L.pad + col * (colW + L.pad);
+      drawArt(g, coverArt(it, 16), 16, x, y, ap, PAL.main);
+      const tx = x + tx0;
       let yy = y;
-      if (tag) text(g, tag, x, yy, pS, PAL.accent);
-      text(g, date, x + tw(tag.length, pS) + (tag ? pS * 2 : 0), yy, pS, PAL.dim);
+      if (tag) text(g, tag, tx, yy, pS, PAL.accent);
+      text(g, date, tx + tw(tag.length, pS) + (tag ? pS * 2 : 0), yy, pS, PAL.dim);
       yy += LH * pS;
-      for (const ln of tl) { text(g, ln, x, yy, pT, PAL.main); yy += LH * pT; }
-      text(g, clip(it.artist, sCols), x, yy, pS, PAL.accent); yy += LH * pS;
-      text(g, clip(sub2, sCols), x, yy, pS, PAL.dim);
+      for (const ln of tl) { text(g, ln, tx, yy, pT, PAL.main); yy += LH * pT; }
+      text(g, clip(it.artist, sCols), tx, yy, pS, PAL.accent); yy += LH * pS;
+      text(g, clip(sub2, sCols), tx, yy, pS, PAL.dim);
+      relHits.push({ x, y: y - L.pad * 0.3, w: colW, h: ih, idx });
       y += ih;
     }
   }
@@ -1570,7 +1889,10 @@ _ 00000 00000 00000 00000 00000 00000 11111
     fx: { draw: drawFx, key: (now) => sig('fx', now) },
     weather: { draw: drawWeather, key: (now) => sig('wx', now) + sig('aq', now) + Math.floor(now / 60e3) },
     news: { draw: drawNews, dyn: dynNews, dwellMul: 2, key: (now) => sig('news', now) + feedReady() },
-    releases: { draw: drawReleases, key: (now) => sig('rel', now) + Math.floor(now / 3600e3) },
+    releases: {
+      draw: drawReleases, dyn: dynDeck, dynOn: () => player.state !== 'idle', fps: 30,
+      key: (now) => sig('rel', now) + Math.floor(now / 3600e3) + '|' + player.state + (player.item ? player.item.id : '') + player.err + '|' + artVer
+    },
     otd: { draw: drawOtd, key: (now) => sig('otd', now) + Math.floor(now / 600e3) + todayKey() },
     countdown: { draw: drawCountdown, key: (now) => Math.floor(now / 1000) + S.cdDate + S.cdName },
     credits: { draw: drawCredits, key: () => String(!!wakeLock) + remoteState + (battery ? Math.round(battery.level * 100) + '' + battery.charging : '') }
@@ -1671,11 +1993,20 @@ _ 00000 00000 00000 00000 00000 00000 11111
     return c;
   }
 
+  function releaseAlerts(now) { // new in the last 24 h, or due within a week (pre-orders)
+    const d = ST.rel.data; if (!d || !S.pages.releases) return [];
+    const out = [];
+    for (const it of d.items) {
+      if (it.t <= now && now - it.t < 864e5) out.push('NEW: ' + it.title);
+      else if (it.t > now && it.t - now < 7 * 864e5) out.push('COMING ' + new Date(it.t).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) + ': ' + it.title);
+    }
+    return out.slice(0, 3);
+  }
   let alertCache = { sec: -1, list: [] };
   function alertsNow(now) {
     const sec = Math.floor(now / 1000);
     if (alertCache.sec !== sec) {
-      alertCache = { sec, list: rainSoon(now).map((r) => 'RAIN ' + r.code + ' ' + r.short).concat(fxAlertList()) };
+      alertCache = { sec, list: rainSoon(now).map((r) => 'RAIN ' + r.code + ' ' + r.short).concat(fxAlertList(), releaseAlerts(now)) };
     }
     return alertCache.list;
   }
@@ -1742,7 +2073,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
     for (const id of visibleIds()) {
       const P = PAGES[id];
       if (layerDirty(id, now)) need = true;
-      else if (P.dyn && (!P.fps || trans || ts - (dynLast[id] || 0) >= 1000 / P.fps - 4)) need = true;
+      else if (P.dyn && (!P.dynOn || P.dynOn()) && (!P.fps || trans || ts - (dynLast[id] || 0) >= 1000 / P.fps - 4)) need = true;
     }
     const hc = drawHeader(now), fc = drawFooter(now);
     if (hc !== lastHc || hdr.key !== lastHk || ftr.key !== lastFk) need = true;
@@ -1775,7 +2106,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
     const l = layerFor(id, now);
     ctx.drawImage(l.c, L.cx + offX, L.cy);
     const P = PAGES[id];
-    if (P.dyn) {
+    if (P.dyn && (!P.dynOn || P.dynOn())) {
       ctx.save();
       ctx.beginPath(); ctx.rect(L.cx, L.cy, L.cw, L.ch); ctx.clip();
       ctx.translate(L.cx + offX, L.cy);
@@ -1788,12 +2119,14 @@ _ 00000 00000 00000 00000 00000 00000 11111
     if (pages.length < 2) return;
     if (trans) { cur = trans.to; trans = null; }
     const to = (cur + dir + pages.length) % pages.length;
+    if (pages[to] !== 'releases') stopPreview();
     trans = { from: cur, to, dir: dir > 0 ? 1 : -1, t0: performance.now() };
     dwellAcc = 0;
   }
   function goTo(idx) {
     if (idx < 0 || idx >= pages.length) return;
     if (trans) { cur = trans.to; trans = null; }
+    if (pages[idx] !== 'releases') stopPreview();
     if (idx !== cur) trans = { from: cur, to: idx, dir: idx > cur ? 1 : -1, t0: performance.now() };
     dwellAcc = 0;
   }
@@ -1828,13 +2161,13 @@ _ 00000 00000 00000 00000 00000 00000 11111
     if (cancelled || p.long) return;
     const dx = e.clientX - p.x, dy = e.clientY - p.y;
     if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy) * 1.4) { go(dx < 0 ? 1 : -1); return; }
-    if (!p.moved && performance.now() - p.t < 500) onTap();
+    if (!p.moved && performance.now() - p.t < 500) onTap(e.clientX, e.clientY);
   };
   cv.addEventListener('pointerup', (e) => endPointer(e, false));
   cv.addEventListener('pointercancel', (e) => endPointer(e, true));
   cv.addEventListener('contextmenu', (e) => e.preventDefault());
 
-  function onTap() {
+  function onTap(cx, cy) {
     if (sleeping) {
       exitSleep();
       if (!isFullscreen() && document.documentElement.requestFullscreen) document.documentElement.requestFullscreen({ navigationUI: 'hide' }).catch(() => {});
@@ -1842,6 +2175,18 @@ _ 00000 00000 00000 00000 00000 00000 11111
     }
     if (banner) { banner = null; forceDraw = true; return; }
     requestWake();
+    if (pages[cur] === 'releases' && !trans) {
+      if (player.state === 'armed') { playRelease(player.idx); return; }
+      if (player.state !== 'idle') { stopPreview(); return; }
+      if (cx != null) {
+        const hx = cx * DPR - L.cx, hy = cy * DPR - L.cy;
+        const hit = relHits.find((r) => hx >= r.x && hx <= r.x + r.w && hy >= r.y && hy <= r.y + r.h);
+        if (hit) {
+          if (!isFullscreen() && document.documentElement.requestFullscreen) document.documentElement.requestFullscreen({ navigationUI: 'hide' }).catch(() => {});
+          playRelease(hit.idx); return;
+        }
+      }
+    }
     if (!isFullscreen() && document.documentElement.requestFullscreen) {
       document.documentElement.requestFullscreen({ navigationUI: 'hide' }).catch(() => { paused = !paused; forceDraw = true; });
       return;
@@ -1888,6 +2233,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
   const NTFY = 'https://ntfy.sh/';
   function enterSleep() {
     if (sleeping) return;
+    stopPreview();
     sleeping = true;
     if (settingsOpen) closeSettings();
     document.body.classList.add('sleep');
@@ -1933,13 +2279,15 @@ _ 00000 00000 00000 00000 00000 00000 11111
     if (low === 'toggle') return sleeping ? exitSleep() : enterSleep();
     if (word === 'msg' || word === 'say' || word === 'message') { if (rest) showBanner(rest); return; }
     if (low === 'clear' || low === 'dismiss') { banner = null; forceDraw = true; return; }
-    const isCmd = ['next', 'prev', 'previous', 'back', 'pause', 'resume', 'play', 'colour', 'color', 'vfd', 'page', 'show', 'palette'].includes(word) || PAGE_ALIASES[low.replace(/\s+/g, '')];
+    if (word === 'play') { const n = parseInt(rest, 10); playRelease(!isNaN(n) && n > 0 ? n - 1 : 0); return; }
+    if (low === 'stop') { stopPreview(); return; }
+    const isCmd = ['next', 'prev', 'previous', 'back', 'pause', 'resume', 'colour', 'color', 'vfd', 'page', 'show', 'palette'].includes(word) || PAGE_ALIASES[low.replace(/\s+/g, '')];
     if (!isCmd) return;
     if (sleeping) exitSleep();
     if (low === 'next') { holdUntil = 0; go(1); }
     else if (low === 'prev' || low === 'previous' || low === 'back') { holdUntil = 0; go(-1); }
     else if (low === 'pause') { paused = true; forceDraw = true; }
-    else if (low === 'resume' || low === 'play') { paused = false; holdUntil = 0; dwellAcc = 0; forceDraw = true; }
+    else if (low === 'resume') { paused = false; holdUntil = 0; dwellAcc = 0; forceDraw = true; }
     else if (word === 'page' || word === 'show') showPage(rest.toLowerCase().replace(/\s+/g, ''));
     else if (/^(palette\s+)?colou?r$/.test(low)) setPalette('color');
     else if (/^(palette\s+)?vfd$/.test(low)) setPalette('vfd');
@@ -2109,7 +2457,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
 
   /* ============================================================ lifecycle */
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) { stop(); return; }
+    if (document.hidden) { stopPreview(); stop(); return; }
     if (sleeping) { exitSleep(); remoteConnect(false); return; } // screen was woken (double-tap / power key)
     requestWake(); schedTick(); start(); remoteConnect(false);
   });
@@ -2131,5 +2479,5 @@ _ 00000 00000 00000 00000 00000 00000 11111
     window.addEventListener('load', () => { navigator.serviceWorker.register('sw.js').catch(() => { /* offline shell unavailable */ }); });
   }
   // test hook (harmless in production): lets the verifier jump to a page
-  window.__mc = { go: (id) => { const i = pages.indexOf(id); if (i >= 0) { cur = i; trans = null; dwellAcc = 0; paused = true; forceDraw = true; } }, state: ST, pages: () => pages.slice(), drawn: () => drawnFrames, sleeping: () => sleeping, remote: () => remoteState, mode: LAUNCH_MODE, cmd: (m) => handleRemote(m), alerts: () => alertsNow(Date.now()), banner: () => !!banner, current: () => pages[trans ? trans.to : cur] };
+  window.__mc = { go: (id) => { const i = pages.indexOf(id); if (i >= 0) { cur = i; trans = null; dwellAcc = 0; paused = true; forceDraw = true; } }, state: ST, pages: () => pages.slice(), drawn: () => drawnFrames, sleeping: () => sleeping, remote: () => remoteState, mode: LAUNCH_MODE, cmd: (m) => handleRemote(m), player: () => ({ state: player.state, err: player.err, t: player.audio ? player.audio.currentTime : 0, peak: Math.max(...peakLv) }), art: () => artMem.size, alerts: () => alertsNow(Date.now()), banner: () => !!banner, current: () => pages[trans ? trans.to : cur] };
 })();

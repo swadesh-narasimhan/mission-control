@@ -12,12 +12,12 @@ Pages rotate every 6 s (headlines get 12 s, the bus page 9 s) with a horizontal 
 | 4 | FX: USD/INR and SGD/INR, ~6-week sparkline, ECB rate date, optional alert thresholds | Frankfurter (ECB) | 1 h |
 | 5 | Weather: Singapore + Bengaluru, AQI / PM2.5, sunrise/sunset, next-6-hours strip, rain-soon | Open-Meteo forecast + air quality (CC BY 4.0) | 15 / 30 min |
 | 6 | Headlines (scrolling) | your RSS feed | 10 min |
-| 7 | New releases: latest singles / EPs / albums by your artists (default Anirudh Ravichander, Sai Abhyankkar), `NEW` for the past week | Apple Music / iTunes catalogue (India store) | 6 h |
+| 7 | New releases: latest singles / EPs / albums by your artists (default Anirudh Ravichander, Sai Abhyankkar) with dot-matrix cover art, `NEW` for the past week. **Tap a release** for the preview deck: Apple's 30-second preview through the phone speaker, a scrolling title, an elapsed counter, progress dots and a live 16-band spectrum analyser with peak hold. Tap again (or let it end) to return | Apple Music / iTunes catalogue (India store) | 6 h |
 | 8 | On this day: one Wikipedia event, changing every 10 min | Wikipedia (CC BY-SA 4.0) | 6 h + at midnight |
 | 9 | Countdown | settings | 1 s |
 | 10 | Credits / attribution | — | — |
 
-**Everywhere:** the header shows battery (`BAT 87%` / `CHG 87%`) next to stale/offline warnings. The footer flashes alerts: **rain expected within 90 min** (`RAIN SG ~25M`, from Open-Meteo's 15-minute forecast, which outside Europe/US is interpolated from hourly data) and **FX thresholds** you set in Settings → FX ALERTS (e.g. `>=95` for USD/INR).
+**Everywhere:** the header shows battery (`BAT 87%` / `CHG 87%`) next to stale/offline warnings. The footer flashes alerts: **rain expected within 90 min** (`RAIN SG ~25M`, from Open-Meteo's 15-minute forecast, which outside Europe/US is interpolated from hourly data) **FX thresholds** you set in Settings → FX ALERTS (e.g. `>=95` for USD/INR), and **new releases** (`NEW: <title>` for 24 h after a release, `COMING 21 NOV: <title>` for pre-orders due within a week).
 
 **Controls:** the first tap goes fullscreen, and later taps pause or resume rotation. Swipe left or right to change page. **Long-press (0.65 s) opens Settings.** With a keyboard: ← → change page, Space pauses, S opens Settings.
 
@@ -99,7 +99,8 @@ Anyone who knows the topic can sleep your screen, so don't share it. If you need
 | `msg Dinner in 10` | Big banner over the ticker for 2 minutes (tap to close). Also wakes a blanked display. |
 | `clear` | Removes the banner. |
 | `bus`, `weather`, `fx`, `clock`, `world`, `news`, `releases`, `otd`, `countdown` (or `page 3`) | Jumps to that page and holds it for 1 minute. |
-| `next` / `prev` / `pause` / `resume` | Page control. |
+| `next` / `prev` / `pause` / `resume` | Page control (`resume` restarts rotation). |
+| `play` / `play 2` / `stop` | Opens New Releases and previews the newest (or 2nd…) release / stops it. Chrome only allows sound after you've tapped the ticker at least once since it was opened (the fullscreen tap counts); otherwise the deck shows `TAP TO PLAY`. |
 | `colour` / `vfd` | Switch palette. |
 
 *Message Shortcut:* **Ask for Input** (Text) → **URL Encode** → **Text** `https://ntfy.sh/<topic>/publish?message=msg%20` followed by the *Encoded Text* variable → **Get Contents of URL**. "Hey Siri, desk message" then lets you dictate the text.
@@ -223,6 +224,7 @@ With USB debugging enabled, `adb install -r app-debug.apk` also works.
 ## Not verified
 
 - **Real M07 hardware.** Everything above ran in headless Chromium emulating the screen size, not on the phone. That covers the 90 Hz / Helio G99 performance, the wake lock, the fullscreen tap and the "Add to Home screen" flow.
+- **Apple's AAC previews in this test browser.** The headless Chromium used for testing can't decode AAC, so the deck, the analyser and the controls were tested with a generated WAV served with the same CORS headers. Chrome on Android plays AAC natively, but real previews haven't been heard on the M07.
 - **Bus positions on the real roads.** Buses are drawn from the GPS positions in the arrival feed; the map is a simplified snapshot, so a dot can sit slightly off its road.
 - **The Business Standard feed through a deployed proxy.** It was only tested through the harness's local proxy.
 - **The Android build.** It was not compiled, because there is no JDK or SDK here.
