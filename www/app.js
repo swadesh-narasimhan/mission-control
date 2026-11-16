@@ -36,7 +36,7 @@
     lfmUser: '', lfmKey: '',
     rssUrl: 'https://www.business-standard.com/rss/markets-106.rss', rssProxy: '', rssDirect: false,
     cdName: 'TRAIN TRIP', cdDate: '',
-    palette: 'vfd', dwell: 6, nightDim: true,
+    palette: 'vfd', dwell: 6, nightDim: true, notchMargin: 28,
     pages: { clock: true, map: true, fx: true, weather: true, news: true, music: true, countdown: true, credits: true }
   };
   function loadSettings() {
@@ -524,18 +524,38 @@ _ 00000 00000 00000 00000 00000 00000 11111
   const ctx = cv.getContext('2d', { alpha: false });
   let W = 0, H = 0, DPR = 1;
   const L = {};
+  /* Screen rotation relative to the phone's natural (portrait) orientation:
+     90 = top of the phone on the LEFT, 270 = top of the phone on the RIGHT. */
+  function screenAngle() {
+    const so = window.screen && window.screen.orientation;
+    let a = so && typeof so.angle === 'number' ? so.angle : (typeof window.orientation === 'number' ? window.orientation : 0);
+    return ((a % 360) + 360) % 360;
+  }
   function readInsets() {
     const cs = getComputedStyle(document.getElementById('safe'));
-    return {
+    const ins = {
       t: parseFloat(cs.paddingTop) || 0, r: parseFloat(cs.paddingRight) || 0,
       b: parseFloat(cs.paddingBottom) || 0, l: parseFloat(cs.paddingLeft) || 0
     };
+    // Fallback: some fullscreen PWAs / WebViews report 0 for the cutout. In landscape the
+    // M07's teardrop notch sits on the side where the top of the phone is, so keep
+    // S.notchMargin CSS px clear on that side.
+    const m = Math.max(0, +S.notchMargin || 0);
+    if (m && window.innerWidth > window.innerHeight) {
+      const a = screenAngle();
+      if (a === 90 && ins.l < m) ins.l = m;
+      else if (a === 270 && ins.r < m) ins.r = m;
+    }
+    return ins;
   }
+  let insetKey = '';
+  const insetSig = () => { const i = readInsets(); return [window.innerWidth, window.innerHeight, i.t, i.r, i.b, i.l].join(','); };
   function resize() {
     DPR = Math.min(window.devicePixelRatio || 1, 2);
     W = Math.round(window.innerWidth * DPR); H = Math.round(window.innerHeight * DPR);
     cv.width = W; cv.height = H;
     const ins = readInsets();
+    insetKey = insetSig();
     const base = Math.min(W, H);
     L.portrait = H >= W;
     L.s1 = Math.max(2, Math.round(base / 180));
@@ -1392,7 +1412,19 @@ _ 00000 00000 00000 00000 00000 00000 11111
     else if (e.key === ' ') { paused = !paused; forceDraw = true; }
     else if (e.key === 's' || e.key === 'S') openSettings();
   });
-  document.addEventListener('fullscreenchange', () => { forceDraw = true; });
+  // Cutout insets can change without a resize event (180° flip, entering fullscreen),
+  // and some browsers update env() a moment after resizing, so re-check a few times.
+  function relayoutSoon() {
+    clearTimeout(rsT);
+    rsT = setTimeout(resize, 120);
+    setTimeout(() => { if (insetSig() !== insetKey) resize(); }, 600);
+    setTimeout(() => { if (insetSig() !== insetKey) resize(); }, 1500);
+  }
+  document.addEventListener('fullscreenchange', () => { forceDraw = true; relayoutSoon(); });
+  if (window.screen && window.screen.orientation && window.screen.orientation.addEventListener) {
+    window.screen.orientation.addEventListener('change', relayoutSoon);
+  } else window.addEventListener('orientationchange', relayoutSoon);
+  setInterval(() => { if (!document.hidden && insetSig() !== insetKey) resize(); }, 3000);
 
   /* ============================================================= wake lock */
   let wakeLock = null;
@@ -1427,6 +1459,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
     f.rssUrl.value = S.rssUrl; f.rssProxy.value = S.rssProxy; f.rssDirect.checked = !!S.rssDirect;
     f.cdName.value = S.cdName; f.cdDate.value = S.cdDate; f.cdDate.min = '2026-01-01T00:00';
     f.palette.value = S.palette; f.dwell.value = S.dwell; f.nightDim.checked = !!S.nightDim;
+    f.notchMargin.value = S.notchMargin;
     for (const p of PAGE_DEFS) f['page_' + p.id].checked = !!S.pages[p.id];
     document.getElementById('sInfo').textContent = 'v' + APP_VERSION + (isNative() ? ' · Android app (native HTTP)' : ' · PWA') +
       ' · wake lock ' + (wakeLock ? 'on' : 'off');
@@ -1442,7 +1475,8 @@ _ 00000 00000 00000 00000 00000 00000 11111
       cdName: f.cdName.value.trim() || 'COUNTDOWN', cdDate: f.cdDate.value,
       palette: f.palette.value === 'color' ? 'color' : 'vfd',
       dwell: Math.max(3, Math.min(120, parseInt(f.dwell.value, 10) || 6)),
-      nightDim: f.nightDim.checked, pages: {}
+      nightDim: f.nightDim.checked,
+      notchMargin: Math.max(0, Math.min(120, parseInt(f.notchMargin.value, 10) || 0)), pages: {}
     };
     for (const p of PAGE_DEFS) n.pages[p.id] = f['page_' + p.id].checked;
     S = n; LS.set('mc.settings', S);
@@ -1450,7 +1484,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
     if (old.rssUrl !== n.rssUrl || old.rssProxy !== n.rssProxy || old.rssDirect !== n.rssDirect) resetSource('news');
     PAL = PALETTES[S.palette];
     layers.clear(); mapBase = null; newsCache.clear(); newsLayout = null; hdr.key = ftr.key = null;
-    rebuildPages(); checkNight(); closeSettings(); schedTick();
+    resize(); rebuildPages(); checkNight(); closeSettings(); schedTick();
   });
   document.getElementById('sCancel').addEventListener('click', closeSettings);
   document.getElementById('sClear').addEventListener('click', () => {
@@ -1469,7 +1503,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
     requestWake(); checkNight(); schedTick(); start();
   });
   let rsT = 0;
-  window.addEventListener('resize', () => { clearTimeout(rsT); rsT = setTimeout(resize, 120); });
+  window.addEventListener('resize', relayoutSoon);
   window.addEventListener('online', () => { for (const k in SRC) if (ST[k].fails) ST[k].next = 0; schedTick(); forceDraw = true; });
   window.addEventListener('offline', () => { forceDraw = true; });
 
