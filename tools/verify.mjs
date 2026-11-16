@@ -43,7 +43,7 @@ await new Promise((r) => server.listen(8099, '127.0.0.1', r));
 const ORIGIN = 'http://localhost:8099';
 const report = { console: [], apis: [], pages: [], installability: null, offline: null, perf: null, interactions: {} };
 
-const PAGES = ['clock', 'bus', 'map', 'fx', 'weather', 'news', 'music', 'countdown', 'credits'];
+const PAGES = ['clock', 'bus', 'map', 'fx', 'weather', 'news', 'releases', 'otd', 'countdown', 'credits'];
 const VIEWPORTS = [
   { name: 'portrait', viewport: { width: 360, height: 800 } },
   { name: 'landscape', viewport: { width: 800, height: 360 } }
@@ -62,6 +62,7 @@ async function waitForData(page, keys, ms = 20000) {
 // ---------- 1. screenshots of every page, both orientations (default settings) ----------
 for (const vp of VIEWPORTS) {
   const ctx = await browser.newContext({ viewport: vp.viewport, deviceScaleFactor: 2, isMobile: true, hasTouch: true, timezoneId: 'Asia/Singapore', locale: 'en-GB' });
+  await ctx.addInitScript(() => { if (!localStorage.getItem('mc.settings')) localStorage.setItem('mc.settings', JSON.stringify({ nightDim: false })); });
   const page = await ctx.newPage();
   watch(page, vp.name);
   await page.goto(ORIGIN + '/');
@@ -89,16 +90,16 @@ for (const vp of VIEWPORTS) {
   }));
   await ctx.addInitScript((proxy) => {
     localStorage.setItem('mc.settings', JSON.stringify({
-      rssProxy: proxy, lfmUser: 'testuser', lfmKey: 'test-not-a-real-key', palette: 'color',
+      rssProxy: proxy, palette: 'color',
       cdName: 'TRAIN TRIP', cdDate: '2026-12-19T08:00'
     }));
   }, ORIGIN + '/proxy?url={url}');
   const page = await ctx.newPage();
   watch(page, 'configured');
   await page.goto(ORIGIN + '/');
-  await waitForData(page, ['iss', 'quakes', 'fx', 'wx', 'news', 'music']);
+  await waitForData(page, ['iss', 'quakes', 'fx', 'wx', 'news', 'rel', 'otd']);
   await page.waitForTimeout(1200);
-  for (const id of ['news', 'music', 'countdown', 'map', 'fx', 'weather', 'clock']) {
+  for (const id of ['news', 'releases', 'otd', 'bus', 'countdown', 'map', 'fx', 'weather', 'clock']) {
     await page.evaluate((i) => window.__mc.go(i), id);
     await page.waitForTimeout(id === 'news' ? 2500 : 600);
     const file = `configured-colour-${id}.png`;

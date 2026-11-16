@@ -5,7 +5,7 @@
  * when nothing moved. */
 'use strict';
 (function () {
-  const APP_VERSION = '1.1.0';
+  const APP_VERSION = '1.2.0';
   const SLIDE_MS = 520;
   const LONGPRESS_MS = 650;
 
@@ -29,18 +29,19 @@
     { id: 'fx', title: 'FX RATES' },
     { id: 'weather', title: 'WEATHER' },
     { id: 'news', title: 'HEADLINES' },
-    { id: 'music', title: 'NOW PLAYING' },
+    { id: 'releases', title: 'NEW RELEASES' },
+    { id: 'otd', title: 'ON THIS DAY' },
     { id: 'countdown', title: 'COUNTDOWN' },
     { id: 'credits', title: 'CREDITS' }
   ];
   const DEFAULTS = {
-    lfmUser: '', lfmKey: '',
+    relArtists: 'Anirudh Ravichander, Sai Abhyankkar',
     rssUrl: 'https://www.business-standard.com/rss/markets-106.rss', rssProxy: '', rssDirect: false,
     cdName: 'TRAIN TRIP', cdDate: '',
     palette: 'vfd', dwell: 6, nightDim: true, notchMargin: 28,
     remoteOn: true, remoteTopic: '',
-    fxAlerts: { usdinr: '', sgdinr: '', usdsgd: '' },
-    pages: { clock: true, bus: true, map: true, fx: true, weather: true, news: true, music: true, countdown: true, credits: true }
+    fxAlerts: { usdinr: '', sgdinr: '' },
+    pages: { clock: true, bus: true, map: true, fx: true, weather: true, news: true, releases: true, otd: true, countdown: true, credits: true }
   };
   function loadSettings() {
     const s = Object.assign({}, DEFAULTS, LS.get('mc.settings', {}));
@@ -57,7 +58,6 @@
   }
   let S = loadSettings();
   const feedReady = () => !!S.rssUrl && (isNative() || !!S.rssProxy || S.rssDirect);
-  const lfmReady = () => !!S.lfmUser && !!S.lfmKey;
 
   /* ================================================================ palette */
   const PALETTES = {
@@ -230,6 +230,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
       .replace(/[“”„″]/g, '"')
       .replace(/[–—−]/g, '-')
       .replace(/…/g, '...')
+      .replace(/\u00A9/g, '(C)')
       .replace(/[{]/g, '(').replace(/[}]/g, ')')
       .replace(/\s+/g, ' ')
       .toUpperCase();
@@ -341,6 +342,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
 
   /* ============================================================ data layer */
   const CK = 'mc.cache.v1.';
+  const KNOWN_ARTISTS = { 'anirudh ravichander': 480976476, 'sai abhyankkar': 1652280551 };
   const todayKey = () => { const d = new Date(); return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); };
   const BUS_STOPS = [
     { code: '16081', name: 'PALM GREEN', lat: 1.29196, lng: 103.76866 },
@@ -449,7 +451,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
     },
     otd: {
       every: 6 * 3600e3, retry: 60e3, timeout: 15e3,
-      on: () => S.pages.clock,
+      on: () => S.pages.otd,
       url: () => { const d = new Date(); return 'https://api.wikimedia.org/feed/v1/wikipedia/en/onthisday/selected/' + pad2(d.getMonth() + 1) + '/' + pad2(d.getDate()); },
       parse(j) {
         if (!j || !Array.isArray(j.selected)) throw new Error('BAD DATA');
@@ -480,24 +482,47 @@ _ 00000 00000 00000 00000 00000 00000 11111
         return { items, title: ch ? pick(ch, 'title') : '' };
       }
     },
-    music: {
-      every: 15e3, retry: 15e3, timeout: 10e3,
-      on: () => S.pages.music && lfmReady(),
-      url: () => 'https://ws.audioscrobbler.com/2.0/?method=user.getrecenttracks&format=json&limit=2' +
-        '&user=' + encodeURIComponent(S.lfmUser.trim()) + '&api_key=' + encodeURIComponent(S.lfmKey.trim()),
-      parse(j) {
-        if (j && j.error) throw new Error('LAST.FM ' + j.error + ' ' + (j.message || ''));
-        if (!j || !j.recenttracks) throw new Error('BAD DATA');
-        let tr = j.recenttracks.track || [];
-        if (!Array.isArray(tr)) tr = [tr];
-        const t = tr[0];
-        if (!t) return { playing: false, none: true };
-        const txt = (v) => (v && typeof v === 'object' ? v['#text'] || v.name || '' : v || '');
-        return {
-          playing: !!(t['@attr'] && t['@attr'].nowplaying === 'true'),
-          track: txt(t.name), artist: txt(t.artist), album: txt(t.album),
-          uts: t.date && t.date.uts ? +t.date.uts * 1000 : null
-        };
+    rel: {
+      every: 6 * 3600e3, retry: 120e3, timeout: 15e3,
+      on: () => S.pages.releases,
+      // iTunes catalogue: resolve artist names to ids once (cached), then list their latest releases.
+      async fetch() {
+        const names = String(S.relArtists || '').split(',').map((x) => x.trim()).filter(Boolean).slice(0, 6);
+        if (!names.length) throw new Error('NO ARTISTS SET');
+        const ids = LS.get('mc.artistIds', {}), out = [];
+        for (const n of names) {
+          const k = n.toLowerCase();
+          let id = ids[k] || KNOWN_ARTISTS[k];
+          if (!id) {
+            const j = await fetchWithTimeout('https://itunes.apple.com/search?entity=musicArtist&country=in&limit=1&term=' + encodeURIComponent(n), this.timeout);
+            id = j && j.results && j.results[0] && j.results[0].artistId;
+            if (!id) continue;
+            ids[k] = id; LS.set('mc.artistIds', ids);
+          }
+          out.push(await fetchWithTimeout('https://itunes.apple.com/lookup?entity=album&limit=60&sort=recent&country=in&id=' + id, this.timeout));
+        }
+        if (!out.length) throw new Error('ARTISTS NOT FOUND');
+        return out;
+      },
+      parse(arr) {
+        const seen = new Set(), items = [];
+        for (const j of arr) {
+          for (const r of (j && j.results) || []) {
+            if (r.wrapperType !== 'collection' || !r.releaseDate || seen.has(r.collectionId)) continue;
+            seen.add(r.collectionId);
+            let name = String(r.collectionName || ''), type = 'ALBUM', film = '', lang = '';
+            if (/ - Single$/i.test(name)) { type = 'SINGLE'; name = name.replace(/ - Single$/i, ''); }
+            else if (/ - EP$/i.test(name)) { type = 'EP'; name = name.replace(/ - EP$/i, ''); }
+            const fm = /\(From [“"]([^"”]+)[”"]\)/i.exec(name);
+            if (fm) { film = fm[1].trim(); name = name.replace(fm[0], ''); }
+            const lm = /\[([A-Za-z]+)\]/.exec(name);
+            if (lm) { lang = lm[1]; name = name.replace(lm[0], ''); }
+            if (/original (motion picture )?(soundtrack|background score)/i.test(name)) type = 'SOUNDTRACK';
+            items.push({ t: Date.parse(r.releaseDate), title: name.replace(/\s+/g, ' ').trim(), artist: r.artistName || '', type, film, lang });
+          }
+        }
+        items.sort((a, b) => b.t - a.t);
+        return { items: items.slice(0, 16) };
       }
     }
   };
@@ -536,8 +561,8 @@ _ 00000 00000 00000 00000 00000 00000 11111
     const s = SRC[k], st = ST[k];
     st.busy = true; st.tried = true;
     try {
-      const u = s.url();
-      const raw = Array.isArray(u) ? await Promise.all(u.map((x) => fetchWithTimeout(x, s.timeout, s.text)))
+      const u = s.fetch ? null : s.url();
+      const raw = s.fetch ? await s.fetch() : Array.isArray(u) ? await Promise.all(u.map((x) => fetchWithTimeout(x, s.timeout, s.text)))
         : await fetchWithTimeout(u, s.timeout, s.text);
       const data = s.parse(raw, st.data);
       st.data = data; st.ts = Date.now(); st.fails = 0; st.err = '';
@@ -632,14 +657,14 @@ _ 00000 00000 00000 00000 00000 00000 11111
     L.hdrH = L.s1 * 7 + L.pad * 2;
     L.ftrH = L.s1 * 7 + L.pad * 2;
     L.cx = L.ux; L.cy = L.uy + L.hdrH; L.cw = L.uw; L.ch = L.uh - L.hdrH - L.ftrH;
-    layers.clear(); mapBase = null; newsCache.clear(); hdr.key = ftr.key = null;
+    layers.clear(); mapBase = null; mmImg = null; newsCache.clear(); hdr.key = ftr.key = null;
     forceDraw = true;
   }
 
   /* ================================================================= pages */
   const ZONES = [
-    { label: 'SINGAPORE', code: 'SGT', tz: 'Asia/Singapore', col: 'sgt' },
-    { label: 'INDIA', code: 'IST', tz: 'Asia/Kolkata', col: 'ist' }
+    { label: 'SINGAPORE', tz: 'Asia/Singapore', col: 'sgt' },
+    { label: 'INDIA', tz: 'Asia/Kolkata', col: 'ist' }
   ];
   function splitBlocks(w, h, n) {
     const out = [];
@@ -684,45 +709,54 @@ _ 00000 00000 00000 00000 00000 00000 11111
   }
 
   /* ---------- 1. clock ---------- */
-  function otdLines(w, now) {
-    const od = ST.otd.data;
-    if (!od || od.date !== todayKey() || !od.items.length) return null;
-    const it = od.items[new Date(now).getHours() % od.items.length];
-    const maxC = Math.floor((w - L.pad * 2 + L.s1) / (6 * L.s1));
-    return { head: 'ON THIS DAY · ' + it.year, lines: wrap(it.text, maxC, L.portrait ? 4 : 2) };
-  }
   function drawClock(g, w, h, now) {
     const d = new Date(now);
-    const od = otdLines(w, now);
-    const otdH = od ? (od.lines.length + 1) * LH * L.s1 + L.pad * 2 : 0;
-    if (od) {
-      let y = h - otdH + L.pad;
-      dotLine(g, L.pad, y - L.pad / 2, w - L.pad * 2, Math.max(1, L.s1 - 1), PAL.dim);
-      text(g, od.head, L.pad, y, L.s1, PAL.accent); y += LH * L.s1;
-      for (const ln of od.lines) { text(g, ln, L.pad, y, L.s1, PAL.dim); y += LH * L.s1; }
-      h -= otdH;
-    }
     const blocks = splitBlocks(w, h, 2);
     ZONES.forEach((z, i) => {
       const b = blocks[i]; const p = zoneParts(z.tz, d);
       const bw = b.w - L.pad * 2;
-      const P = Math.max(2, Math.floor(Math.min(bw / 37, (b.h * 0.42) / 7)));
+      const P = Math.max(2, Math.floor(Math.min(bw / 37, (b.h * 0.45) / 7)));
       const q = Math.max(2, Math.round(P * 0.4));
       const totalW = 29 * P + P + 17 * q;
-      const stackH = th(L.s2) + L.s2 * 3 + th(P) + L.s2 * 3 + th(L.s2) + L.s1 * 3 + th(L.s1);
+      const stackH = th(L.s2) + L.s2 * 3 + th(P) + L.s2 * 3 + th(L.s2);
       let y = b.y + Math.round((b.h - stackH) / 2);
-      const col = PAL[z.col];
-      text(g, z.label + ' · ' + z.code, b.x + b.w / 2, y, L.s2, col, 'center');
+      text(g, z.label, b.x + b.w / 2, y, L.s2, PAL[z.col], 'center');
       y += th(L.s2) + L.s2 * 3;
       const x0 = Math.round(b.x + (b.w - totalW) / 2);
       text(g, p.hour + ':' + p.minute, x0, y, P, PAL.main, 'left', true);
       text(g, ':' + p.second, x0 + 30 * P, y + th(P) - th(q), q, PAL.main, 'left', true);
       y += th(P) + L.s2 * 3;
       text(g, `${p.weekday} ${p.day} ${p.month} ${p.year}`, b.x + b.w / 2, y, L.s2, PAL.main, 'center');
-      y += th(L.s2) + L.s1 * 3;
-      text(g, zoneOffset(z.tz, d), b.x + b.w / 2, y, L.s1, PAL.dim, 'center');
     });
     blockDividers(g, w, h, 2);
+  }
+
+  /* ---------- On this day (Wikipedia) ---------- */
+  function drawOtd(g, w, h, now) {
+    const st = status('otd', now), od = ST.otd.data;
+    const bottom = statusLine(g, w, h, 'WIKIPEDIA · CC BY-SA 4.0', st);
+    const head = new Date(now).toLocaleDateString('en-GB', { day: 'numeric', month: 'long' });
+    if (!od || od.date !== todayKey() || !od.items.length) {
+      text(g, head, w / 2, L.pad * 2, L.s2, PAL.accent, 'center');
+      centerMsg(g, w, bottom, ST.otd.fails ? 'NO DATA' : 'LOADING', ST.otd.err);
+      return;
+    }
+    const it = od.items[Math.floor(now / 600e3) % od.items.length]; // a different event every 10 min
+    const avail = bottom - L.pad * 2, inner = w - L.pad * 2;
+    let tp = L.s1, lines = [];
+    for (const cand of [L.s3, L.s2, L.s1]) {
+      lines = wrap(it.text, Math.floor((inner + cand) / (6 * cand)), 12);
+      tp = cand;
+      if (lines.length * LH * cand <= avail * 0.55) break;
+    }
+    const textH = lines.length * LH * tp;
+    const ys = String(it.year);
+    const Py = fitP(Math.max(4, ys.length), w * 0.7, Math.max(L.s2 * 7, avail - textH - th(L.s2) - L.pad * 3) , L.s3 * 3);
+    const total = th(L.s2) + L.pad + th(Py) + L.pad * 1.5 + textH;
+    let y = Math.max(L.pad, Math.round((bottom - total) / 2));
+    text(g, head, w / 2, y, L.s2, PAL.accent, 'center'); y += th(L.s2) + L.pad;
+    text(g, ys, w / 2, y, Py, PAL.main, 'center', true); y += th(Py) + L.pad * 1.5;
+    for (const ln of lines) { text(g, ln, w / 2, y, tp, PAL.main, 'center'); y += LH * tp; }
   }
 
   /* ---------- 2. world map ---------- */
@@ -772,7 +806,9 @@ _ 00000 00000 00000 00000 00000 00000 11111
     [113.4,-22,114.2,-21.8,116.7,-20.6,121,-19.5,122.3,-17.2,124,-16.3,125.7,-14.4,127.8,-14.3,129.6,-14.9,130.3,-12.7,132.6,-11.5,135,-12.2,136.9,-12.2,135.9,-13.4,135.4,-15,137.2,-15.9,139.3,-17.4,140.8,-17.4,141.6,-15,141.6,-12.6,142.5,-10.7,143.3,-12,143.5,-14.2,145.3,-15,146.2,-18.8,148.8,-20.4,150.8,-22.5,153.1,-25.2,153.6,-28.6,153,-31,151.3,-33.8,150,-37.4,147.8,-37.9,146.3,-39.1,144.9,-37.9,143.6,-38.8,140.6,-38,139.6,-37.2,139.4,-35.6,138.1,-35.6,138.5,-34.4,137.8,-32.9,137.5,-34,136,-35,136,-34,135.2,-34.6,134.2,-32.8,131.3,-31.5,128,-32.2,124.4,-33.3,123,-33.9,119.9,-34,117.9,-35.1,115,-34.3,115.7,-31.9,115,-29.5,114.2,-26.3,113.4,-24.4,113.4,-22],
     [144.6,-40.7,148.3,-40.9,148,-43,146.8,-43.6,145.2,-42.4,144.6,-40.7],
     [172.7,-34.4,174.4,-35.6,176,-37.6,178.5,-37.7,177.9,-39.1,176.8,-40,175.2,-41.6,174.6,-41.2,175,-39.6,173.8,-39.3,174.6,-38,172.7,-34.4],
-    [172.7,-40.5,174.3,-41.6,173.3,-43,172.7,-43.8,171.2,-44.4,170.6,-45.9,169,-46.6,166.5,-46,166.8,-45.2,168.4,-44,170.8,-42.8,172,-41.3,172.7,-40.5]
+    [172.7,-40.5,174.3,-41.6,173.3,-43,172.7,-43.8,171.2,-44.4,170.6,-45.9,169,-46.6,166.5,-46,166.8,-45.2,168.4,-44,170.8,-42.8,172,-41.3,172.7,-40.5],
+    // Antarctica (crude; south of the flat map's range, shown on the globe)
+    [-180,-90,180,-90,180,-78,165,-77,165,-71,150,-68,120,-66,90,-66,60,-67,30,-69,0,-70,-20,-73,-45,-77,-60,-73,-58,-63,-65,-66,-75,-71,-100,-73,-130,-74,-150,-77,-180,-78,-180,-90]
   ].map((pts) => {
     let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
     for (let i = 0; i < pts.length; i += 2) {
@@ -854,88 +890,93 @@ _ 00000 00000 00000 00000 00000 00000 11111
     mapBase = { key, c, mask, cols, rows, mw, mh };
     return c;
   }
+  const RAD = Math.PI / 180;
   function mapGeom(w, h) {
-    const pad = L.pad;
+    const pad = L.pad, bottom = h - (LH * L.s1 * 2 + pad);
     if (L.portrait) {
-      const mw = w - pad * 2, mh = Math.round(mw / 2.5);
-      return { mx: pad, my: pad, mw, mh, ix: pad, iy: Math.round(pad * 2.2 + mh), iw: w - pad * 2, ip: L.s1 };
+      const R = Math.floor(Math.min(w - pad * 2, bottom - pad * 2) / 2);
+      const iss = ST.iss.data;
+      const c = iss ? { lat: iss.lat, lon: iss.lon } : { lat: 1.35, lon: 103.82 };
+      return { globe: true, cx: Math.round(w / 2), cy: Math.round(pad + (bottom - pad) / 2), R, c };
     }
-    const ip = Math.max(2, L.s1 - 1);
-    const iw = 30 * 6 * ip;
-    let mw = w - iw - pad * 3, mh = Math.round(mw / 2.5);
-    const maxH = h - pad * 2 - (th(L.s1) + pad);
-    if (mh > maxH) { mh = maxH; mw = Math.round(mh * 2.5); }
-    return { mx: pad, my: Math.round((h - th(L.s1) - pad - mh) / 2), mw, mh, ix: w - iw - pad, iy: pad, iw, ip };
+    let mw = w - pad * 2, mh = Math.round(mw / 2.5);
+    if (mh > bottom - pad) { mh = bottom - pad; mw = Math.round(mh * 2.5); }
+    return { globe: false, mx: Math.round((w - mw) / 2), my: Math.round(pad / 2 + (bottom - pad / 2 - mh) / 2), mw, mh };
   }
   const proj = (G, lon, lat) => [
     G.mx + ((lon + 180) / 360) * G.mw,
     G.my + ((LAT_TOP - Math.max(LAT_BOT, Math.min(LAT_TOP, lat))) / (LAT_TOP - LAT_BOT)) * G.mh
   ];
-  const fmtLat = (v) => Math.abs(v).toFixed(2) + '°' + (v >= 0 ? 'N' : 'S');
-  const fmtLon = (v) => Math.abs(v).toFixed(2) + '°' + (v >= 0 ? 'E' : 'W');
+  /* Flat map or orthographic globe; returns null for points on the far side of the globe. */
+  function project(G, lon, lat) {
+    if (!G.globe) return proj(G, lon, lat);
+    const p0 = G.c.lat * RAD, p = lat * RAD, dl = (lon - G.c.lon) * RAD;
+    const cosc = Math.sin(p0) * Math.sin(p) + Math.cos(p0) * Math.cos(p) * Math.cos(dl);
+    if (cosc < 0) return null;
+    return [G.cx + G.R * Math.cos(p) * Math.sin(dl), G.cy - G.R * (Math.cos(p0) * Math.sin(p) - Math.sin(p0) * Math.cos(p) * Math.cos(dl))];
+  }
+  let globeGrid = null;
+  function getGlobeGrid() { // land/sea dots at ~1.5 deg, thinned towards the poles; computed once
+    if (globeGrid) return globeGrid;
+    const lat = [], lon = [], land = [];
+    for (let la = -88.5; la <= 88.6; la += 1.5) {
+      const step = Math.min(30, 1.5 / Math.max(0.05, Math.cos(la * RAD)));
+      for (let lo = -180 + step / 2; lo < 180; lo += step) { lat.push(la); lon.push(lo); land.push(inLand(lo, la) ? 1 : 0); }
+    }
+    globeGrid = { lat: Float32Array.from(lat), lon: Float32Array.from(lon), land: Uint8Array.from(land) };
+    return globeGrid;
+  }
+  function drawGlobe(g, G, now) {
+    const gr = getGlobeGrid(), sun = subsolar(now), sl = Math.sin(sun.lat * RAD), cl = Math.cos(sun.lat * RAD);
+    const p0 = G.c.lat * RAD, sp0 = Math.sin(p0), cp0 = Math.cos(p0);
+    const dot = G.R * 1.5 * RAD, rL = dot * 0.36, rS = dot * 0.14;
+    const day = new Path2D(), dusk = new Path2D(), night = new Path2D(), sea = new Path2D();
+    for (let i = 0; i < gr.lat.length; i++) {
+      const p = gr.lat[i] * RAD, dl = (gr.lon[i] - G.c.lon) * RAD;
+      const sp = Math.sin(p), cp = Math.cos(p), cdl = Math.cos(dl);
+      const cosc = sp0 * sp + cp0 * cp * cdl;
+      if (cosc <= 0.02) continue;
+      const x = G.cx + G.R * cp * Math.sin(dl), y = G.cy - G.R * (cp0 * sp - sp0 * cp * cdl);
+      const k = 0.45 + 0.55 * cosc; // dots shrink towards the limb
+      if (!gr.land[i]) { const r = rS * k; sea.moveTo(x + r, y); sea.arc(x, y, r, 0, Math.PI * 2); continue; }
+      const cz = sp * sl + cp * cl * Math.cos((gr.lon[i] - sun.lon) * RAD);
+      const path = cz > 0.05 ? day : cz > -0.1 ? dusk : night, r = rL * k;
+      path.moveTo(x + r, y); path.arc(x, y, r, 0, Math.PI * 2);
+    }
+    g.fillStyle = PAL.main; g.globalAlpha = 0.1; g.fill(sea);
+    g.fillStyle = PAL.land; g.globalAlpha = 0.95; g.fill(day);
+    g.globalAlpha = 0.6; g.fill(dusk);
+    g.globalAlpha = 0.33; g.fill(night);
+    g.globalAlpha = 0.5; g.strokeStyle = PAL.dim; g.lineWidth = Math.max(1, L.s1 * 0.3);
+    g.beginPath(); g.arc(G.cx, G.cy, G.R + L.s1, 0, Math.PI * 2); g.stroke();
+    g.globalAlpha = 1;
+  }
   function drawMap(g, w, h, now) {
     const G = mapGeom(w, h);
-    g.drawImage(getMapBase(G.mw, G.mh, now), G.mx, G.my);
-    // home labels (static)
+    const qd = ST.quakes.data, list = qd ? qd.list.filter((q) => now - q.t <= 864e5) : [];
+    const stI = status('iss', now), stQ = status('quakes', now);
+    const st = stI.stale || stI.none ? stI : stQ;
+    statusLine(g, w, h, (qd ? list.length + ' QUAKES M4.5+ · 24H' : 'QUAKES --') + ' · USGS · WHERETHEISS.AT', st);
+    if (G.globe) drawGlobe(g, G, now);
+    else g.drawImage(getMapBase(G.mw, G.mh, now), G.mx, G.my);
     const lp = Math.max(2, L.s1 - 1);
     for (const hm of HOMES) {
-      const [x, y] = proj(G, hm.lon, hm.lat);
+      const xy = project(G, hm.lon, hm.lat); if (!xy) continue;
+      const [x, y] = xy;
       if (hm.side > 0) text(g, hm.name, x + lp * 3, y + lp, lp, PAL.home);
       else text(g, hm.name, x - lp * 3, y - th(lp) - lp, lp, PAL.home, 'right');
     }
-    const p = G.ip, lh = LH * p, maxC = Math.floor(G.iw / (6 * p));
-    let y = G.iy;
-    const stI = status('iss', now), iss = ST.iss.data;
-    text(g, 'ISS', G.ix, y, p, PAL.accent);
-    text(g, stI.text, G.ix + G.iw, y, p, stI.color, 'right'); y += lh * 1.3;
-    if (iss) {
-      const rows = [
-        ['LAT', fmtLat(iss.lat)], ['LON', fmtLon(iss.lon)],
-        ['ALT', Math.round(iss.alt).toLocaleString('en-US') + ' KM'],
-        ['VEL', Math.round(iss.vel).toLocaleString('en-US') + ' KM/H'],
-        ['SUN', iss.vis === 'daylight' ? 'DAYLIGHT' : iss.vis === 'eclipsed' ? 'ECLIPSED' : String(iss.vis || '-')]
-      ];
-      for (const [a, b] of rows) { text(g, a, G.ix, y, p, PAL.dim); text(g, b, G.ix + 5 * 6 * p, y, p, PAL.main); y += lh; }
-    } else { text(g, ST.iss.fails ? 'NO DATA' : 'WAITING', G.ix, y, p, PAL.dim); y += lh; }
-    y += lh * 0.6;
-    const stQ = status('quakes', now), qd = ST.quakes.data;
-    const list = qd ? qd.list.filter((q) => now - q.t <= 864e5) : [];
-    text(g, 'QUAKES M4.5+ 24H' + (qd ? ': ' + list.length : ''), G.ix, y, p, PAL.accent); y += lh;
-    text(g, stQ.text, G.ix, y, p, stQ.color); y += lh * 1.3;
-    const bottom = h - L.pad - th(L.s1) - L.pad;
-    if (qd) {
-      for (const q of list) {
-        const col = q.mag >= 6 ? PAL.bad : q.mag >= 5 ? PAL.warn : PAL.main;
-        const head = 'M' + q.mag.toFixed(1);
-        const a = ago(now - q.t);
-        if (L.portrait) { // two lines: magnitude/age/depth, then the full place name
-          if (y + lh + th(p) > bottom) break;
-          text(g, head, G.ix, y, p, col);
-          text(g, a + ' AGO · ' + Math.round(q.depth) + ' KM DEEP', G.ix + 6 * 6 * p, y, p, PAL.dim);
-          text(g, clip(q.place, maxC), G.ix, y + lh, p, PAL.main);
-          y += lh * 2 + p * 2;
-        } else {
-          if (y + th(p) > bottom) break;
-          text(g, head, G.ix, y, p, col);
-          text(g, a, G.ix + 5 * 6 * p, y, p, PAL.dim);
-          text(g, clip(q.place, maxC - 10), G.ix + 10 * 6 * p, y, p, PAL.main);
-          y += lh;
-        }
-      }
-      if (!list.length) text(g, 'NONE IN LAST 24H', G.ix, y, p, PAL.dim);
-    }
-    fitText(g, 'ISS: WHERETHEISS.AT · QUAKES: USGS', L.pad, h - L.pad - th(L.s1), (L.portrait ? w : G.mw + L.pad) - L.pad * 2, L.s1, PAL.dim);
   }
   function dynMap(g, w, h, now, ts) {
     const G = mapGeom(w, h);
     const pulse = (ts % 2000) / 2000;
     const u = Math.max(2, L.s1);
-    // quakes
     const qd = ST.quakes.data;
     if (qd) {
       for (const q of qd.list) {
         if (now - q.t > 864e5) continue;
-        const [x, y] = proj(G, q.lon, q.lat);
+        const xy = project(G, q.lon, q.lat); if (!xy) continue;
+        const [x, y] = xy;
         const base = u * (0.8 + (q.mag - 4.5) * 0.9);
         const fresh = now - q.t < 3 * 3600e3;
         const ph = fresh ? pulse : 0.15;
@@ -946,48 +987,51 @@ _ 00000 00000 00000 00000 00000 00000 11111
         g.beginPath(); g.arc(x, y, Math.max(1.5, u * 0.55), 0, Math.PI * 2); g.fill();
       }
     }
-    // homes
     const blink = ((ts / 1000) | 0) % 2 === 0;
     for (const hm of HOMES) {
-      const [x, y] = proj(G, hm.lon, hm.lat);
+      const xy = project(G, hm.lon, hm.lat); if (!xy) continue;
       g.strokeStyle = PAL.home; g.lineWidth = Math.max(1, u * 0.35); g.globalAlpha = blink ? 1 : 0.5;
-      g.strokeRect(x - u * 1.2, y - u * 1.2, u * 2.4, u * 2.4); g.globalAlpha = 1;
+      g.strokeRect(xy[0] - u * 1.2, xy[1] - u * 1.2, u * 2.4, u * 2.4); g.globalAlpha = 1;
     }
-    // ISS trail + marker
     const iss = ST.iss.data;
     if (iss) {
       const stale = isStale('iss', now);
       const tr = iss.trail || [];
       const sp = sprite(PAL.iss, Math.max(2, Math.round(u * 0.7)), 'glow'); const o = sp.width / 2;
       g.globalCompositeOperation = 'lighter';
+      let prev = null;
       for (let i = 0; i < tr.length; i++) {
-        const [x, y] = proj(G, tr[i].lon, tr[i].lat);
+        const xy = project(G, tr[i].lon, tr[i].lat);
+        if (!xy) { prev = null; continue; }
+        const [x, y] = xy;
         g.globalAlpha = 0.15 + 0.6 * (i / Math.max(1, tr.length - 1));
         g.drawImage(sp, x - o, y - o);
-        if (i > 0 && Math.abs(tr[i].lon - tr[i - 1].lon) < 90) { // interpolate, skip antimeridian jumps
-          const [px, py] = proj(G, tr[i - 1].lon, tr[i - 1].lat);
-          const n = Math.floor(Math.hypot(x - px, y - py) / (u * 1.5));
-          for (let s = 1; s < n; s++) g.drawImage(sp, px + ((x - px) * s) / n - o, py + ((y - py) * s) / n - o);
+        if (prev && (G.globe || Math.abs(tr[i].lon - tr[i - 1].lon) < 90)) { // interpolate; skip antimeridian jumps
+          const [px, py] = prev, n = Math.floor(Math.hypot(x - px, y - py) / (u * 1.5));
+          for (let s2 = 1; s2 < n; s2++) g.drawImage(sp, px + ((x - px) * s2) / n - o, py + ((y - py) * s2) / n - o);
         }
+        prev = xy;
       }
       g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
-      const [x, y] = proj(G, iss.lon, iss.lat);
-      g.strokeStyle = PAL.iss; g.lineWidth = Math.max(1, u * 0.4);
-      if (!stale) { g.globalAlpha = 1 - pulse; g.beginPath(); g.arc(x, y, u * (1.5 + pulse * 5), 0, Math.PI * 2); g.stroke(); }
-      g.globalAlpha = stale ? 0.45 : 1;
-      const big = sprite(PAL.iss, Math.max(3, u * 1.6), 'glow');
-      g.globalCompositeOperation = 'lighter'; g.drawImage(big, x - big.width / 2, y - big.height / 2);
-      g.globalCompositeOperation = 'source-over';
-      text(g, stale ? 'ISS (STALE)' : 'ISS', x + u * 3, y + u, Math.max(2, L.s1 - 1), PAL.iss);
-      g.globalAlpha = 1;
+      const xy = project(G, iss.lon, iss.lat);
+      if (xy) {
+        const [x, y] = xy;
+        g.strokeStyle = PAL.iss; g.lineWidth = Math.max(1, u * 0.4);
+        if (!stale) { g.globalAlpha = 1 - pulse; g.beginPath(); g.arc(x, y, u * (1.5 + pulse * 5), 0, Math.PI * 2); g.stroke(); }
+        g.globalAlpha = stale ? 0.45 : 1;
+        const big = sprite(PAL.iss, Math.max(3, u * 1.6), 'glow');
+        g.globalCompositeOperation = 'lighter'; g.drawImage(big, x - big.width / 2, y - big.height / 2);
+        g.globalCompositeOperation = 'source-over';
+        text(g, stale ? 'ISS (STALE)' : 'ISS', x + u * 3, y + u, Math.max(2, L.s1 - 1), PAL.iss);
+        g.globalAlpha = 1;
+      }
     }
   }
 
   /* ---------- 3. FX ---------- */
   const FX_PAIRS = [
     { id: 'usdinr', name: 'USD/INR', f: (r) => r.inr, dp: 2 },
-    { id: 'sgdinr', name: 'SGD/INR', f: (r) => r.inr / r.sgd, dp: 2 },
-    { id: 'usdsgd', name: 'USD/SGD', f: (r) => r.sgd, dp: 4 }
+    { id: 'sgdinr', name: 'SGD/INR', f: (r) => r.inr / r.sgd, dp: 2 }
   ];
   function parseFxRule(str) {
     const m = /^\s*(>=|<=|>|<|=)?\s*([0-9]*\.?[0-9]+)\s*$/.exec(str || '');
@@ -1010,7 +1054,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
     if (!d) { centerMsg(g, w, bottom, st.none && ST.fx.fails ? 'NO DATA' : 'LOADING', ST.fx.err); return; }
     const S2 = d.series;
     const pairs = FX_PAIRS;
-    const blocks = splitBlocks(w, bottom, 3);
+    const blocks = splitBlocks(w, bottom, pairs.length);
     pairs.forEach((pr, i) => {
       const b = blocks[i];
       const vals = S2.map(pr.f);
@@ -1022,7 +1066,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
       if (hit) fitText(g, 'ALERT ' + hit.op + ' ' + hit.v, x + bw, y + th(L.s2) - th(L.s1), bw - tw(8, L.s2) - L.s1 * 2, L.s1, PAL.warn, 'right');
       y += th(L.s2) + L.s2 * 2;
       const rs = last.toFixed(pr.dp);
-      const P = fitP(rs.length, bw, b.h * 0.26, L.s3 * 2);
+      const P = fitP(rs.length, bw, b.h * 0.3, L.s3 * 3);
       text(g, rs, x, y, P, hit ? PAL.accent : PAL.main, 'left', true);
       y += th(P) + L.s2 * 2;
       if (prev != null) {
@@ -1058,7 +1102,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
       const days = Math.round((Date.parse(S2[S2.length - 1].d) - Date.parse(S2[0].d)) / 864e5);
       fitText(g, days + 'D LO ' + lo.toFixed(pr.dp) + ' HI ' + hi.toFixed(pr.dp), x, y, bw, L.s1, PAL.dim);
     });
-    blockDividers(g, w, bottom, 3);
+    blockDividers(g, w, bottom, pairs.length);
   }
 
   /* ---------- 4. weather ---------- */
@@ -1107,7 +1151,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
   }
   function drawWeather(g, w, h, now) {
     const st = status('wx', now), d = ST.wx.data;
-    const bottom = statusLine(g, w, h, 'WEATHER + AIR: OPEN-METEO.COM · CC BY 4.0', st);
+    const bottom = statusLine(g, w, h, 'OPEN-METEO.COM · CC BY 4.0', st);
     if (!d) { centerMsg(g, w, bottom, ST.wx.fails ? 'NO DATA' : 'LOADING', ST.wx.err); return; }
     const aq = ST.aq.data, soon = rainSoon(now);
     const blocks = splitBlocks(w, bottom, 2);
@@ -1164,135 +1208,183 @@ _ 00000 00000 00000 00000 00000 00000 11111
 
   /* ---------- bus radar (stops 16081 + 16089, Pasir Panjang Rd) ---------- */
   const BUS_C = { lat: (BUS_STOPS[0].lat + BUS_STOPS[1].lat) / 2, lng: (BUS_STOPS[0].lng + BUS_STOPS[1].lng) / 2 };
-  const BUS_RANGE_M = 3000;
-  function busGeom(w, h) {
-    const pad = L.pad, statusH = th(L.s1) + pad * 2;
-    if (L.portrait) {
-      const top = pad + th(L.s1);
-      const R = Math.floor(Math.min(w - pad * 2, (h - statusH) * 0.56 - top) / 2);
-      return { cx: Math.round(w / 2), cy: top + R, R, lx: pad, ly: top + R * 2 + pad, lw: w - pad * 2 };
-    }
-    const top = Math.round(pad / 2) + th(L.s1) + L.s1;
-    const R = Math.floor((h - statusH - top) / 2);
-    return { cx: pad + R, cy: top + R, R, lx: pad * 3 + R * 2, ly: pad, lw: w - (pad * 4 + R * 2) };
+  // Roads + routes baked by tools/build-minimap.mjs; loaded after the first frame so it never delays startup.
+  let MM = null;
+  function loadMinimap() {
+    if (MM || document.getElementById('mmData')) return;
+    const sc = document.createElement('script');
+    sc.id = 'mmData'; sc.src = 'minimap.js'; sc.async = true;
+    sc.onload = () => { MM = window.MC_MINIMAP || null; mmImg = null; forceDraw = true; };
+    document.head.appendChild(sc);
   }
-  function busXY(G, lat, lng) {
-    const dx = (lng - BUS_C.lng) * 111320 * Math.cos(BUS_C.lat * Math.PI / 180);
-    const dy = (lat - BUS_C.lat) * 110574;
-    const dist = Math.hypot(dx, dy), ang = Math.atan2(dx, dy); // bearing, clockwise from north
-    const r = Math.min(dist, BUS_RANGE_M) / BUS_RANGE_M * G.R * (dist > BUS_RANGE_M ? 0.96 : 1);
-    return { x: G.cx + Math.sin(ang) * r, y: G.cy - Math.cos(ang) * r, ang: (ang + Math.PI * 2) % (Math.PI * 2), out: dist > BUS_RANGE_M, dist };
+  const MM_RANGE = 1500; // metres from the stops to the nearer map edge
+  function busGeom(w, h) {
+    const pad = L.pad, statusH = 2 * LH * L.s1 + pad * 2;
+    if (L.portrait) {
+      const mh = Math.round((h - statusH) * 0.58);
+      return { mx: pad, my: Math.round(pad / 2), mw: w - pad * 2, mh, lx: pad, ly: Math.round(pad / 2) + mh + pad, lw: w - pad * 2, lb: h - statusH };
+    }
+    const mw = Math.round((w - pad * 3) * 0.55);
+    return { mx: pad, my: Math.round(pad / 2), mw, mh: h - statusH, lx: pad * 2 + mw, ly: pad, lw: w - mw - pad * 3, lb: h - statusH };
+  }
+  const mmK = (G) => MM_RANGE / (Math.min(G.mw, G.mh) / 2); // metres per pixel
+  const mmXY = (G, x, y) => { const k = mmK(G); return [G.mx + G.mw / 2 + x / k, G.my + G.mh / 2 - y / k]; };
+  const llToM = (lat, lng) => [(lng - BUS_C.lng) * 111320 * Math.cos(BUS_C.lat * RAD), (lat - BUS_C.lat) * 110574];
+  let mmImg = null;
+  function getMinimap(G) {
+    const key = [G.mw, G.mh, S.palette].join('|');
+    if (mmImg && mmImg.key === key) return mmImg.c;
+    const c = mkCanvas(G.mw, G.mh), g = c.getContext('2d');
+    const k = mmK(G), ox = G.mw / 2, oy = G.mh / 2, u = Math.max(2, L.s1);
+    const dots = (pts, spacing, r, path) => { // dotted polyline into a Path2D
+      let carry = 0;
+      for (let i = 0; i + 3 < pts.length; i += 2) {
+        const x0 = ox + pts[i] / k, y0 = oy - pts[i + 1] / k, x1 = ox + pts[i + 2] / k, y1 = oy - pts[i + 3] / k;
+        const len = Math.hypot(x1 - x0, y1 - y0);
+        let d = carry;
+        for (; d <= len; d += spacing) { const t = len ? d / len : 0, x = x0 + (x1 - x0) * t, y = y0 + (y1 - y0) * t; path.moveTo(x + r, y); path.arc(x, y, r, 0, Math.PI * 2); }
+        carry = d - len;
+      }
+    };
+    if (MM) {
+      const layer = (fill, alpha, build) => { const pth = new Path2D(); build(pth); g.fillStyle = fill; g.globalAlpha = alpha; g.fill(pth); };
+      layer(PAL.dim, 0.7, (pth) => { for (const r of MM.coast) dots(r, u * 1.4, u * 0.2, pth); });
+      const cls = [[u * 0.9, u * 0.4, 0.8], [u * 1.0, u * 0.34, 0.65], [u * 1.3, u * 0.25, 0.38], [u * 1.7, u * 0.18, 0.2]];
+      for (let ci = 3; ci >= 0; ci--) layer(PAL.main, cls[ci][2], (pth) => { for (const r of MM.roads) if (r[0] === ci) dots(r.slice(1), cls[ci][0], cls[ci][1], pth); });
+      layer(PAL.accent, 0.45, (pth) => { for (const sv in MM.routes) for (const r of MM.routes[sv]) dots(r, u * 0.75, u * 0.22, pth); });
+      g.globalAlpha = 1;
+      // road labels: nearest candidate that fits and doesn't overlap
+      const lp = Math.max(2, L.s1 - 1), placed = [[ox - u * 10, oy - u * 6, u * 20, u * 12]];
+      const hit = (a) => placed.some((b) => a[0] < b[0] + b[2] && a[0] + a[2] > b[0] && a[1] < b[1] + b[3] && a[1] + a[3] > b[1]);
+      for (const lab of MM.labels) {
+        const lw = tw(lab.t.length, lp) + lp * 2, lh = th(lp) + lp * 2;
+        for (const [x, y] of lab.p) {
+          const r = [ox + x / k - lw / 2, oy - y / k - lh / 2, lw, lh];
+          if (r[0] < u * 2 || r[1] < u * 2 || r[0] + lw > G.mw - u * 2 || r[1] + lh > G.mh - u * 2 || hit(r)) continue;
+          g.fillStyle = '#000'; g.globalAlpha = 0.8; g.fillRect(r[0], r[1], lw, lh); g.globalAlpha = 1;
+          text(g, lab.t, r[0] + lp, r[1] + lp, lp, PAL.dim);
+          placed.push(r); break;
+        }
+      }
+    } else text(g, 'LOADING MAP', ox, oy, u, PAL.dim, 'center');
+    // frame, north, scale bar
+    g.strokeStyle = PAL.dim; g.globalAlpha = 0.6; g.lineWidth = 1; g.setLineDash([u, u * 1.5]);
+    g.strokeRect(0.5, 0.5, G.mw - 1, G.mh - 1); g.setLineDash([]); g.globalAlpha = 1;
+    const lp = Math.max(2, L.s1 - 1);
+    text(g, 'N', u * 2, u * 2, lp, PAL.dim);
+    const bar = 500 / k;
+    g.fillStyle = PAL.dim; g.fillRect(u * 2, G.mh - u * 2.5, bar, Math.max(1, u * 0.35));
+    text(g, '500M', u * 2 + bar + lp * 2, G.mh - u * 2.5 - th(lp) / 2, lp, PAL.dim);
+    mmImg = { key, c };
+    return c;
   }
   const busMin = (t, now) => { const ms = t - now; return ms <= 60e3 ? 'ARR' : Math.floor(ms / 60e3) + 'M'; };
   const loadCol = (l) => (l === 'SEA' ? PAL.good : l === 'SDA' ? PAL.warn : l === 'LSD' ? PAL.bad : PAL.main);
-  function drawBus(g, w, h, now) {
-    const st = status('bus', now), d = ST.bus.data;
-    statusLine(g, w, h, 'BUS: ARRIVELAH (BUSROUTER.SG) · LTA DATA', st);
-    const G = busGeom(w, h), p = L.s1, lp = Math.max(2, p - 1);
-    // range rings, cross-hair, north
-    g.fillStyle = PAL.dim;
-    for (const m of [1000, 2000, 3000]) {
-      const r = m / BUS_RANGE_M * G.R, n = Math.max(24, Math.round(r / (p * 2.2)));
-      g.globalAlpha = m === BUS_RANGE_M ? 0.7 : 0.45; g.beginPath();
-      for (let k = 0; k < n; k++) { const a = k / n * Math.PI * 2, xx = G.cx + Math.cos(a) * r, yy = G.cy + Math.sin(a) * r; g.moveTo(xx + p * 0.3, yy); g.arc(xx, yy, p * 0.3, 0, Math.PI * 2); }
-      g.fill(); g.globalAlpha = 1;
-      text(g, m < 1000 ? m + 'M' : m / 1000 + 'KM', G.cx + r * 0.71 + lp, G.cy - r * 0.71 - th(lp) - lp, lp, PAL.dim);
-    }
-    g.globalAlpha = 0.25; g.beginPath();
-    for (let k = -G.R; k <= G.R; k += p * 3) { g.moveTo(G.cx + k + p * 0.25, G.cy); g.arc(G.cx + k, G.cy, p * 0.25, 0, Math.PI * 2); g.moveTo(G.cx + p * 0.25, G.cy + k); g.arc(G.cx, G.cy + k, p * 0.25, 0, Math.PI * 2); }
-    g.fill(); g.globalAlpha = 1;
-    text(g, 'N', G.cx, G.cy - G.R - th(lp) - lp, lp, PAL.dim, 'center');
-    g.strokeStyle = PAL.home; g.lineWidth = Math.max(1, p * 0.4);
-    g.strokeRect(G.cx - p * 1.3, G.cy - p * 1.3, p * 2.6, p * 2.6);
-    if (!d) {
-      text(g, ST.bus.fails ? 'NO DATA' : 'LOADING', G.lx, G.ly, L.s2, PAL.main);
-      if (ST.bus.err) fitText(g, ST.bus.err, G.lx, G.ly + LH * L.s2, G.lw, p, PAL.dim);
-      return;
-    }
-    // arrival lists, one column per stop
-    const colW = G.lw / 2, lh = LH * p;
-    const maxRows = Math.floor((h - G.ly - L.pad * 2 - th(L.s1) - lh * 2.2) / lh);
-    d.forEach((stop, i) => {
-      const x = G.lx + colW * i, info = BUS_STOPS[i];
-      const cols = Math.floor((colW - L.pad / 2 + p) / (6 * p));
-      let y = G.ly;
-      text(g, clip((i === 0 ? '● ' : '○ ') + info.name, cols), x, y, p, PAL.accent); y += lh;
-      text(g, info.code + ' NEXT THEN', x, y, lp, PAL.dim); y += lh * 1.2;
-      const rows = stop.services.map((sv) => ({ no: sv.no, b: sv.buses.filter((bb) => bb.t > now - 30e3) }))
-        .filter((r) => r.b.length).sort((a, b) => a.b[0].t - b.b[0].t);
-      rows.slice(0, Math.max(0, maxRows)).forEach((r) => {
-        text(g, r.no, x, y, p, PAL.main);
-        text(g, busMin(r.b[0].t, now), x + 5 * 6 * p, y, p, loadCol(r.b[0].load));
-        if (r.b[1]) text(g, busMin(r.b[1].t, now), x + 9 * 6 * p, y, p, PAL.dim);
-        y += lh;
-      });
-      if (!rows.length) text(g, 'NO BUSES', x, y, p, PAL.dim);
-    });
-  }
-  /* Pre-rendered pieces so the 30 fps radar only stamps bitmaps. */
-  let sweepImg = null;
-  function getSweep(R) {
-    const key = R + '|' + S.palette;
-    if (sweepImg && sweepImg.key === key) return sweepImg.c;
-    const c = mkCanvas(R * 2, R * 2), g = c.getContext('2d');
-    const [r0, g0, b0] = rgb(PAL.main), wedge = Math.PI / 2.5;
-    if (g.createConicGradient) { // wedge trailing the sweep line, which points north (up)
-      const cg = g.createConicGradient(-Math.PI / 2 - wedge, R, R);
-      cg.addColorStop(0, `rgba(${r0},${g0},${b0},0)`);
-      cg.addColorStop(wedge / (Math.PI * 2), `rgba(${r0},${g0},${b0},0.22)`);
-      cg.addColorStop(wedge / (Math.PI * 2) + 0.001, `rgba(${r0},${g0},${b0},0)`);
-      cg.addColorStop(1, `rgba(${r0},${g0},${b0},0)`);
-      g.fillStyle = cg; g.beginPath(); g.arc(R, R, R, 0, Math.PI * 2); g.fill();
-    }
-    g.strokeStyle = PAL.main; g.globalAlpha = 0.8; g.lineWidth = Math.max(1, L.s1 * 0.35);
-    g.beginPath(); g.moveTo(R, R); g.lineTo(R, 0); g.stroke();
-    sweepImg = { key, c };
-    return c;
-  }
   const labelCache = new Map();
   function labelImg(str, p, color) {
     const key = str + '|' + p + '|' + color;
     let c = labelCache.get(key);
     if (!c) {
-      if (labelCache.size > 200) labelCache.clear();
+      if (labelCache.size > 300) labelCache.clear();
       c = mkCanvas(tw(norm(str).length, p) + p * 4, th(p) + p * 4);
-      text(c.getContext('2d'), str, p * 2, p * 2, p, color);
+      const g = c.getContext('2d');
+      g.fillStyle = 'rgba(0,0,0,0.75)'; g.fillRect(p, p, c.width - p * 2, c.height - p * 2);
+      text(g, str, p * 2, p * 2, p, color);
       labelCache.set(key, c);
     }
     return c;
   }
+  function drawBus(g, w, h, now) {
+    const st = status('bus', now), d = ST.bus.data;
+    statusLine(g, w, h, 'BUS: ARRIVELAH / LTA · MAP © OPENSTREETMAP', st);
+    const G = busGeom(w, h), u = Math.max(2, L.s1);
+    g.drawImage(getMinimap(G), G.mx, G.my);
+    const [sx, sy] = mmXY(G, 0, 0);
+    g.strokeStyle = PAL.home; g.lineWidth = Math.max(1, u * 0.5);
+    g.strokeRect(sx - u * 1.8, sy - u * 1.8, u * 3.6, u * 3.6);
+    g.fillStyle = PAL.home; g.fillRect(sx - u * 0.5, sy - u * 0.5, u, u);
+    if (!d) {
+      text(g, ST.bus.fails ? 'NO DATA' : 'LOADING', G.lx, G.ly, L.s2, PAL.main);
+      if (ST.bus.err) fitText(g, ST.bus.err, G.lx, G.ly + LH * L.s2, G.lw, L.s1, PAL.dim);
+      return;
+    }
+    // arrival lists: one column per stop; larger text when it fits
+    const colW = G.lw / 2;
+    const noLen = Math.max(3, ...d.map((st2) => Math.max(0, ...st2.services.map((sv) => sv.no.length))));
+    const need = noLen + 1 + 4 + 3;
+    const p = tw(need, L.s1 + 1) <= colW - L.pad / 2 ? L.s1 + 1 : L.s1, lh = LH * p, lp = Math.max(2, L.s1 - 1);
+    d.forEach((stop, i) => {
+      const x = G.lx + colW * i, info = BUS_STOPS[i];
+      const cols = Math.floor((colW - L.pad / 2 + p) / (6 * p));
+      let y = G.ly;
+      fitText(g, (i === 0 ? '● ' : '○ ') + info.name, x, y, colW - L.pad / 2, p, PAL.accent); y += lh;
+      text(g, info.code + '  NEXT THEN', x, y, lp, PAL.dim); y += LH * lp * 1.4;
+      const rows = stop.services.map((sv) => ({ no: sv.no, b: sv.buses.filter((bb) => bb.t > now - 30e3) }))
+        .filter((r) => r.b.length).sort((a, b) => a.b[0].t - b.b[0].t);
+      for (const r of rows) {
+        if (y + th(p) > G.lb) break;
+        text(g, r.no, x, y, p, PAL.main);
+        text(g, busMin(r.b[0].t, now), x + (noLen + 1) * 6 * p, y, p, loadCol(r.b[0].load));
+        if (r.b[1]) text(g, busMin(r.b[1].t, now), x + (noLen + 5) * 6 * p, y, p, PAL.dim);
+        y += lh;
+      }
+      if (!rows.length) text(g, 'NO BUSES', x, y, p, PAL.dim);
+    });
+  }
   function dynBus(g, w, h, now, ts) {
     const G = busGeom(w, h), d = ST.bus.data;
-    const sweep = ((ts % 4000) / 4000) * Math.PI * 2; // bearing of the sweep line
-    g.save(); g.translate(G.cx, G.cy); g.rotate(sweep);
-    g.drawImage(getSweep(G.R), -G.R, -G.R);
-    g.restore();
     if (!d) return;
-    const lp = Math.max(2, L.s1 - 1), bp = Math.max(2, Math.round(L.s1 * 1.1));
+    const u = Math.max(2, L.s1), lp = Math.max(2, L.s1 - 1), inset = u * 3;
+    const cx = G.mx + G.mw / 2, cy = G.my + G.mh / 2;
+    const tags = [];
+    g.save(); g.beginPath(); g.rect(G.mx, G.my, G.mw, G.mh); g.clip();
     d.forEach((stop, i) => {
+      const col = i === 0 ? PAL.main : PAL.accent;
       for (const sv of stop.services) {
         sv.buses.forEach((bb, k) => {
-          if (!bb.lat || !bb.lng || bb.t < now - 30e3) return;
-          const P = busXY(G, bb.lat, bb.lng);
-          const since = ((sweep - P.ang) + Math.PI * 4) % (Math.PI * 2);
-          const glow = (P.out ? 0.35 : 0.45) + 0.55 * (1 - since / (Math.PI * 2));
-          g.globalAlpha = glow * (k === 0 ? 1 : 0.6);
-          if (i === 0) {
-            const sp = sprite(PAL.main, bp, 'glow');
-            g.globalCompositeOperation = 'lighter'; g.drawImage(sp, P.x - sp.width / 2, P.y - sp.height / 2); g.globalCompositeOperation = 'source-over';
-          } else {
-            g.strokeStyle = PAL.accent; g.lineWidth = Math.max(1, L.s1 * 0.4);
-            g.beginPath(); g.arc(P.x, P.y, bp * 0.8, 0, Math.PI * 2); g.stroke();
+          if (k > 1 || !bb.lat || !bb.lng || bb.t < now - 30e3) return;
+          let [x, y] = mmXY(G, ...llToM(bb.lat, bb.lng));
+          let edge = false;
+          if (x < G.mx + inset || x > G.mx + G.mw - inset || y < G.my + inset || y > G.my + G.mh - inset) {
+            const dx = x - cx, dy = y - cy;
+            const sc = Math.min((G.mw / 2 - inset) / Math.max(1e-6, Math.abs(dx)), (G.mh / 2 - inset) / Math.max(1e-6, Math.abs(dy)));
+            x = cx + dx * sc; y = cy + dy * sc; edge = true;
           }
-          if (k === 0) {
-            const im = labelImg(sv.no, lp, i === 0 ? PAL.main : PAL.accent), lw = im.width - lp * 4;
-            const right = P.x + bp * 1.4 + lw < w - 2;
-            g.drawImage(im, Math.round((right ? P.x + bp * 1.4 : P.x - bp * 1.4 - lw) - lp * 2), Math.round(P.y - th(lp) / 2 - lp * 2));
+          const soon = bb.t - now <= 2 * 60e3, period = soon ? 700 : 1400;
+          const ph = ((ts + i * 300 + k * 500) % period) / period;
+          if (edge) { // arrow on the map edge pointing towards the bus
+            const a = Math.atan2(y - cy, x - cx), r = u * (k ? 1.1 : 1.6);
+            g.fillStyle = col; g.globalAlpha = k ? 0.45 : 0.9;
+            g.beginPath(); g.moveTo(x + Math.cos(a) * r, y + Math.sin(a) * r);
+            g.lineTo(x + Math.cos(a + 2.5) * r, y + Math.sin(a + 2.5) * r); g.lineTo(x + Math.cos(a - 2.5) * r, y + Math.sin(a - 2.5) * r);
+            g.closePath(); g.fill();
+          } else {
+            g.strokeStyle = col; g.lineWidth = Math.max(1, u * 0.4);
+            g.globalAlpha = (1 - ph) * (k ? 0.5 : 1);
+            g.beginPath(); g.arc(x, y, u * (1 + ph * 2.4), 0, Math.PI * 2); g.stroke();
+            g.globalAlpha = k ? 0.55 : 1;
+            const sp = sprite(col, Math.round(u * (k ? 0.9 : 1.3)), 'glow');
+            g.globalCompositeOperation = 'lighter'; g.drawImage(sp, x - sp.width / 2, y - sp.height / 2); g.globalCompositeOperation = 'source-over';
           }
           g.globalAlpha = 1;
+          if (k === 0) tags.push({ x, y, edge, t: bb.t, im: labelImg(sv.no + ' ' + busMin(bb.t, now), lp, col) });
         });
       }
     });
+    const placed = [[cx - u * 2, cy - u * 2, u * 4, u * 4]];
+    const hit = (a) => placed.some((b) => a[0] < b[0] + b[2] && a[0] + a[2] > b[0] && a[1] < b[1] + b[3] && a[1] + a[3] > b[1]);
+    tags.sort((a, b) => a.t - b.t);
+    for (const tg of tags) {
+      const W2 = tg.im.width, H2 = tg.im.height;
+      const ly = Math.min(G.my + G.mh - H2, Math.max(G.my, tg.y - H2 / 2));
+      const cands = [[tg.x + u * 2 - lp, ly], [tg.x - u * 2 - W2 + lp, ly], [tg.x - W2 / 2, ly - H2], [tg.x - W2 / 2, ly + H2]];
+      for (const [lx, yy] of cands) {
+        const r = [lx, yy, W2, H2];
+        if (lx < G.mx || yy < G.my || lx + W2 > G.mx + G.mw || yy + H2 > G.my + G.mh || hit(r)) continue;
+        g.drawImage(tg.im, Math.round(lx), Math.round(yy)); placed.push(r); break;
+      }
+    }
+    g.restore();
   }
 
   /* ---------- 5. headlines ---------- */
@@ -1379,41 +1471,34 @@ _ 00000 00000 00000 00000 00000 00000 11111
     g.restore();
   }
 
-  /* ---------- 6. now playing ---------- */
-  function drawMusic(g, w, h, now) {
-    const sec = Math.floor(now / 1000);
-    if (!lfmReady()) {
-      statusLine(g, w, h, 'LAST.FM', { text: 'NOT SET', color: PAL.warn });
-      centerMsg(g, w, h, 'LAST.FM NOT SET', 'LONG-PRESS TO OPEN SETTINGS AND ENTER YOUR USERNAME + API KEY');
-      return;
+  /* ---------- 6. new releases (iTunes catalogue) ---------- */
+  function drawReleases(g, w, h, now) {
+    const st = status('rel', now), d = ST.rel.data;
+    const bottom = statusLine(g, w, h, 'APPLE MUSIC / ITUNES CATALOGUE', st);
+    if (!d || !d.items.length) { centerMsg(g, w, bottom, ST.rel.fails ? 'NO DATA' : 'LOADING', ST.rel.err || 'SET ARTISTS IN SETTINGS'); return; }
+    const ncol = L.portrait ? 1 : 2;
+    const colW = (w - L.pad * (ncol + 1)) / ncol;
+    const pT = L.s2, pS = L.s1;
+    const tCols = Math.floor((colW + pT) / (6 * pT)), sCols = Math.floor((colW + pS) / (6 * pS));
+    let col = 0, y = L.pad;
+    for (const it of d.items) {
+      const age = now - it.t;
+      const tag = it.t > now ? 'COMING ' : age < 7 * 864e5 ? 'NEW ' : '';
+      const date = new Date(it.t).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: age > 300 * 864e5 ? 'numeric' : undefined });
+      const tl = wrap(it.title, tCols, 2);
+      const sub2 = [it.film ? 'FROM ' + it.film : '', it.type + (it.lang ? ' · ' + it.lang : '')].filter(Boolean).join(' · ');
+      const ih = LH * pS + tl.length * LH * pT + 2 * LH * pS + L.pad * 0.7;
+      if (y + ih > bottom) { col++; y = L.pad; if (col >= ncol) break; }
+      const x = L.pad + col * (colW + L.pad);
+      let yy = y;
+      if (tag) text(g, tag, x, yy, pS, PAL.accent);
+      text(g, date, x + tw(tag.length, pS) + (tag ? pS * 2 : 0), yy, pS, PAL.dim);
+      yy += LH * pS;
+      for (const ln of tl) { text(g, ln, x, yy, pT, PAL.main); yy += LH * pT; }
+      text(g, clip(it.artist, sCols), x, yy, pS, PAL.accent); yy += LH * pS;
+      text(g, clip(sub2, sCols), x, yy, pS, PAL.dim);
+      y += ih;
     }
-    const st = status('music', now), d = ST.music.data;
-    const bottom = statusLine(g, w, h, 'LAST.FM · ' + S.lfmUser, st);
-    if (!d) { centerMsg(g, w, bottom, ST.music.fails ? 'NO DATA' : 'LOADING', ST.music.err); return; }
-    const x = L.pad, bw = w - L.pad * 2;
-    if (d.none) { centerMsg(g, w, bottom, 'IDLE', 'NO SCROBBLES YET'); return; }
-    const pickP = (s, maxLines) => {
-      for (const p of [L.s3, L.s2, L.s1]) {
-        const lines = wrap(s, Math.floor(bw / (6 * p)), maxLines + 1);
-        if (lines.length <= maxLines) return { p, lines };
-      }
-      return { p: L.s1, lines: wrap(s, Math.floor(bw / (6 * L.s1)), maxLines) };
-    };
-    const playing = d.playing && !isStale('music', now);
-    const head = playing ? ((sec % 2) ? '♪ NOW PLAYING' : '  NOW PLAYING') : 'IDLE · LAST PLAYED';
-    const tr = pickP(d.track || '-', 3), ar = pickP(d.artist || '-', 2);
-    const al = d.album ? wrap(d.album, Math.floor(bw / (6 * L.s1)), 2) : [];
-    const blockH = th(L.s2) + L.pad + tr.lines.length * LH * tr.p + L.s2 * 2 + ar.lines.length * LH * ar.p + L.s1 * 2 + al.length * LH * L.s1 + LH * L.s1;
-    let y = Math.max(L.pad, Math.round((bottom - blockH) / 2));
-    text(g, head, x, y, L.s2, playing ? PAL.accent : PAL.dim);
-    y += th(L.s2) + L.pad;
-    const tc = playing ? PAL.main : PAL.dim;
-    tr.lines.forEach((ln) => { text(g, ln, x, y, tr.p, tc, 'left', playing); y += LH * tr.p; });
-    y += L.s2 * 2;
-    ar.lines.forEach((ln) => { text(g, ln, x, y, ar.p, playing ? PAL.accent : PAL.dim); y += LH * ar.p; });
-    y += L.s1 * 2;
-    al.forEach((ln) => { text(g, ln, x, y, L.s1, PAL.dim); y += LH * L.s1; });
-    if (!playing && d.uts) text(g, ago(now - d.uts) + ' AGO', x, y, L.s1, PAL.dim);
   }
 
   /* ---------- 7. countdown ---------- */
@@ -1449,12 +1534,12 @@ _ 00000 00000 00000 00000 00000 00000 11111
     const p = L.s1, maxC = Math.floor((w - L.pad * 2) / (6 * p));
     const rows = [
       ['h', 'DATA SOURCES'],
-      ['t', 'WEATHER + AIR: OPEN-METEO.COM (CC BY 4.0), AIR DATA CAMS'],
-      ['t', 'BUS: ARRIVELAH (BUSROUTER.SG), DATA FROM LTA DATAMALL'],
+      ['t', 'WEATHER: OPEN-METEO.COM (CC BY 4.0) · AIR QUALITY: CAMS'],
+      ['t', 'BUS: ARRIVELAH / LTA DATAMALL · MAP © OPENSTREETMAP (ODBL)'],
       ['t', 'QUAKES: USGS · ISS: WHERETHEISS.AT'],
       ['t', 'FX: FRANKFURTER - ECB DAILY REFERENCE RATES'],
       ['t', 'ON THIS DAY: WIKIPEDIA (CC BY-SA 4.0)'],
-      ['t', 'HEADLINES: YOUR RSS FEED · MUSIC: LAST.FM'],
+      ['t', 'NEW RELEASES: ITUNES · HEADLINES: YOUR RSS FEED'],
       ['g', ''],
       ['h', 'CONTROLS'],
       ['t', 'TAP: FULLSCREEN / PAUSE · SWIPE: PAGE · HOLD: SETTINGS'],
@@ -1479,13 +1564,14 @@ _ 00000 00000 00000 00000 00000 00000 11111
   }
 
   const PAGES = {
-    clock: { draw: drawClock, key: (now) => Math.floor(now / 1000) + sig('otd', now) },
-    bus: { draw: drawBus, dyn: dynBus, fps: 15, dwellMul: 1.5, key: (now) => sig('bus', now) + Math.floor(now / 5000) },
+    clock: { draw: drawClock, key: (now) => Math.floor(now / 1000) },
+    bus: { draw: drawBus, dyn: dynBus, fps: 15, dwellMul: 1.5, key: (now) => sig('bus', now) + Math.floor(now / 5000) + !!MM },
     map: { draw: drawMap, dyn: dynMap, key: (now) => sig('iss', now) + sig('quakes', now) + Math.floor(now / 60e3) },
     fx: { draw: drawFx, key: (now) => sig('fx', now) },
     weather: { draw: drawWeather, key: (now) => sig('wx', now) + sig('aq', now) + Math.floor(now / 60e3) },
     news: { draw: drawNews, dyn: dynNews, dwellMul: 2, key: (now) => sig('news', now) + feedReady() },
-    music: { draw: drawMusic, key: (now) => sig('music', now) + lfmReady() + (Math.floor(now / 1000) % 2) + Math.floor(now / 60e3) },
+    releases: { draw: drawReleases, key: (now) => sig('rel', now) + Math.floor(now / 3600e3) },
+    otd: { draw: drawOtd, key: (now) => sig('otd', now) + Math.floor(now / 600e3) + todayKey() },
     countdown: { draw: drawCountdown, key: (now) => Math.floor(now / 1000) + S.cdDate + S.cdName },
     credits: { draw: drawCredits, key: () => String(!!wakeLock) + remoteState + (battery ? Math.round(battery.level * 100) + '' + battery.charging : '') }
   };
@@ -1676,7 +1762,11 @@ _ 00000 00000 00000 00000 00000 00000 11111
     ctx.drawImage(hc, 0, 0);
     ctx.drawImage(fc, 0, L.uy + L.uh - L.ftrH);
     drawnFrames++;
-    if (!firstDrawn) { firstDrawn = true; try { performance.mark('mc-first-frame'); } catch (e) { /* ignore */ } }
+    if (!firstDrawn) {
+      firstDrawn = true;
+      try { performance.mark('mc-first-frame'); } catch (e) { /* ignore */ }
+      setTimeout(loadMinimap, 300);
+    }
   }
   let firstDrawn = false, drawnFrames = 0;
   const dynLast = {};
@@ -1815,7 +1905,8 @@ _ 00000 00000 00000 00000 00000 00000 11111
   const PAGE_ALIASES = {
     clock: 'clock', time: 'clock', bus: 'bus', buses: 'bus', world: 'map', map: 'map', iss: 'map', quakes: 'map',
     fx: 'fx', rates: 'fx', forex: 'fx', weather: 'weather', wx: 'weather', news: 'news', headlines: 'news',
-    music: 'music', nowplaying: 'music', countdown: 'countdown', trip: 'countdown', credits: 'credits'
+    music: 'releases', releases: 'releases', new: 'releases', singles: 'releases',
+    otd: 'otd', onthisday: 'otd', history: 'otd', countdown: 'countdown', trip: 'countdown', credits: 'credits'
   };
   function showPage(name) {
     const n = parseInt(name, 10);
@@ -1827,7 +1918,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
   }
   function setPalette(v) {
     S.palette = v; LS.set('mc.settings', S); PAL = PALETTES[v];
-    layers.clear(); mapBase = null; newsCache.clear(); newsLayout = null; hdr.key = ftr.key = null;
+    layers.clear(); mapBase = null; mmImg = null; newsCache.clear(); newsLayout = null; hdr.key = ftr.key = null;
     if (banner) banner.key = '';
     forceDraw = true;
   }
@@ -1915,7 +2006,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
     if (settingsOpen) return;
     settingsOpen = true;
     const f = sf.elements;
-    f.lfmUser.value = S.lfmUser; f.lfmKey.value = S.lfmKey;
+    f.relArtists.value = S.relArtists;
     f.rssUrl.value = S.rssUrl; f.rssProxy.value = S.rssProxy; f.rssDirect.checked = !!S.rssDirect;
     f.cdName.value = S.cdName; f.cdDate.value = S.cdDate; f.cdDate.min = '2026-01-01T00:00';
     f.palette.value = S.palette; f.dwell.value = S.dwell; f.nightDim.checked = !!S.nightDim;
@@ -1934,7 +2025,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
     e.preventDefault();
     const f = sf.elements, old = S;
     const n = {
-      lfmUser: f.lfmUser.value.trim(), lfmKey: f.lfmKey.value.trim(),
+      relArtists: f.relArtists.value.trim(),
       rssUrl: f.rssUrl.value.trim(), rssProxy: f.rssProxy.value.trim(), rssDirect: f.rssDirect.checked,
       cdName: f.cdName.value.trim() || 'COUNTDOWN', cdDate: f.cdDate.value,
       palette: f.palette.value === 'color' ? 'color' : 'vfd',
@@ -1949,10 +2040,10 @@ _ 00000 00000 00000 00000 00000 00000 11111
     for (const p of PAGE_DEFS) n.pages[p.id] = f['page_' + p.id].checked;
     for (const pr of FX_PAIRS) { const v = f['fx_' + pr.id].value.trim(); n.fxAlerts[pr.id] = parseFxRule(v) ? v : ''; }
     S = n; LS.set('mc.settings', S);
-    if (old.lfmUser !== n.lfmUser || old.lfmKey !== n.lfmKey) resetSource('music');
+    if (old.relArtists !== n.relArtists) resetSource('rel');
     if (old.rssUrl !== n.rssUrl || old.rssProxy !== n.rssProxy || old.rssDirect !== n.rssDirect) resetSource('news');
     PAL = PALETTES[S.palette];
-    layers.clear(); mapBase = null; newsCache.clear(); newsLayout = null; hdr.key = ftr.key = null;
+    layers.clear(); mapBase = null; mmImg = null; newsCache.clear(); newsLayout = null; hdr.key = ftr.key = null;
     resize(); rebuildPages(); checkNight(); closeSettings(); schedTick(); remoteConnect(true);
   });
   function showRemoteUrls() {

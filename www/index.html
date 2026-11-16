@@ -21,10 +21,9 @@
     <h1>SETTINGS</h1>
 
     <fieldset>
-      <legend>LAST.FM</legend>
-      <label>USERNAME <input name="lfmUser" spellcheck="false" autocapitalize="off"></label>
-      <label>API KEY <input name="lfmKey" type="password" autocomplete="new-password" spellcheck="false" autocapitalize="off"></label>
-      <p class="note">Stored only in this browser (localStorage). Get a key at last.fm/api/account/create.</p>
+      <legend>NEW RELEASES</legend>
+      <label>ARTISTS (COMMA-SEPARATED) <input name="relArtists" spellcheck="false" autocapitalize="words"></label>
+      <p class="note">Latest singles, EPs and albums from the Apple Music / iTunes catalogue (India store). Up to 6 artists.</p>
     </fieldset>
 
     <fieldset>
@@ -70,7 +69,6 @@
       <legend>FX ALERTS</legend>
       <label>USD/INR <input name="fx_usdinr" placeholder="e.g. >=95 or <=93.5" inputmode="decimal" spellcheck="false"></label>
       <label>SGD/INR <input name="fx_sgdinr" placeholder="e.g. >=74" inputmode="decimal" spellcheck="false"></label>
-      <label>USD/SGD <input name="fx_usdsgd" placeholder="e.g. <=1.27" inputmode="decimal" spellcheck="false"></label>
       <p class="note">The rate turns amber and the footer flashes the alert when the latest ECB rate crosses it. A bare number means &gt;=. Leave blank for none.</p>
     </fieldset>
 

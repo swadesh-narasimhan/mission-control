@@ -2,19 +2,20 @@
 
 An always-on desk display for a Galaxy M07 (or any Android phone running Chrome). It is a static PWA with no build step and no dependencies at runtime. Everything is drawn on a `<canvas>` in a VFD dot-matrix style using a hand-made 5×7 font, and it works offline after the first load.
 
-Pages rotate every 6 s (headlines get 12 s) with a horizontal slide:
+Pages rotate every 6 s (headlines get 12 s, the bus page 9 s) with a horizontal slide:
 
 | # | Page | Source | Refresh |
 |---|------|--------|---------|
-| 1 | Clock: Singapore + India, date, UTC offset, "On this day" (rotates hourly) | device clock, Wikipedia | 1 s / 6 h |
-| 2 | Bus radar: stops 16081 Aft Palm Green Condo + 16089 Aft Clementi Rd (Pasir Panjang Rd), live bus positions within 3 km, next/then arrivals, crowding colour | arrivelah (busrouter.sg, LTA data) | 30 s |
-| 3 | World map: ISS + 10-min trail, M4.5+ quakes (24 h), SIN/BLR markers, day/night | wheretheiss.at, USGS | 10 s / 5 min |
-| 4 | FX: USD/INR, SGD/INR, USD/SGD, ~6-week sparkline, ECB rate date, optional alert thresholds | Frankfurter (ECB) | 1 h |
+| 1 | Clock: Singapore + India, time and date | device clock (`Intl`) | 1 s |
+| 2 | Bus minimap: dot-matrix map of Pasir Panjang Rd and the surrounding roads with the routes of 10/30/51/143/183/188/200 traced, approaching buses as pulsing dots (buses off the map as edge arrows), next/then arrivals for stops 16081 Aft Palm Green Condo + 16089 Aft Clementi Rd, crowding colour | arrivelah (busrouter.sg, LTA data); map © OpenStreetMap | 30 s |
+| 3 | World map, full screen: ISS + 10-min trail, M4.5+ quakes (24 h), SIN/BLR, day/night. Landscape: flat map. Portrait: dot-matrix globe centred on the ISS | wheretheiss.at, USGS | 10 s / 5 min |
+| 4 | FX: USD/INR and SGD/INR, ~6-week sparkline, ECB rate date, optional alert thresholds | Frankfurter (ECB) | 1 h |
 | 5 | Weather: Singapore + Bengaluru, AQI / PM2.5, sunrise/sunset, next-6-hours strip, rain-soon | Open-Meteo forecast + air quality (CC BY 4.0) | 15 / 30 min |
 | 6 | Headlines (scrolling) | your RSS feed | 10 min |
-| 7 | Now playing | Last.fm `user.getRecentTracks` | 15 s |
-| 8 | Countdown | settings | 1 s |
-| 9 | Credits / attribution | — | — |
+| 7 | New releases: latest singles / EPs / albums by your artists (default Anirudh Ravichander, Sai Abhyankkar), `NEW` for the past week | Apple Music / iTunes catalogue (India store) | 6 h |
+| 8 | On this day: one Wikipedia event, changing every 10 min | Wikipedia (CC BY-SA 4.0) | 6 h + at midnight |
+| 9 | Countdown | settings | 1 s |
+| 10 | Credits / attribution | — | — |
 
 **Everywhere:** the header shows battery (`BAT 87%` / `CHG 87%`) next to stale/offline warnings. The footer flashes alerts: **rain expected within 90 min** (`RAIN SG ~25M`, from Open-Meteo's 15-minute forecast, which outside Europe/US is interpolated from hourly data) and **FX thresholds** you set in Settings → FX ALERTS (e.g. `>=95` for USD/INR).
 
@@ -63,7 +64,7 @@ Then open http://localhost:8090. Any static server works; the service worker nee
 2. Tap **⋮ → Add to Home screen → Install** (Chrome may show "Install app" instead). The icon lands on the home screen.
 3. Launch it from the icon. It opens fullscreen (`display: fullscreen`) in whichever orientation you hold the phone.
 4. **Tap once** so Chrome grants the Screen Wake Lock, which needs a user gesture. Credits → SYSTEM shows `WAKE LOCK ON`.
-5. Long-press to open Settings and enter your Last.fm details, RSS proxy and countdown date.
+5. Long-press to open Settings and set the RSS proxy, countdown date and (optionally) your New Releases artists.
 
 Tips for 24/7 use:
 - Keep it on the charger. As a fallback to the wake lock, turn on **Developer options → Stay awake** (screen never sleeps while charging).
@@ -97,7 +98,7 @@ Anyone who knows the topic can sleep your screen, so don't share it. If you need
 |---|---|
 | `msg Dinner in 10` | Big banner over the ticker for 2 minutes (tap to close). Also wakes a blanked display. |
 | `clear` | Removes the banner. |
-| `bus`, `weather`, `fx`, `clock`, `world`, `news`, `music`, `countdown` (or `page 3`) | Jumps to that page and holds it for 1 minute. |
+| `bus`, `weather`, `fx`, `clock`, `world`, `news`, `releases`, `otd`, `countdown` (or `page 3`) | Jumps to that page and holds it for 1 minute. |
 | `next` / `prev` / `pause` / `resume` | Page control. |
 | `colour` / `vfd` | Switch palette. |
 
@@ -105,13 +106,13 @@ Anyone who knows the topic can sleep your screen, so don't share it. If you need
 
 ## Settings backup
 
-Long-press → Settings → **BACKUP LINK** shares a link with all settings, including your Last.fm key, RSS proxy, remote topic, countdown and FX alerts. Open it in Chrome on any phone and confirm to restore. The settings sit after the `#` in the link, so GitHub's servers never receive them. Keep the link private.
+Long-press → Settings → **BACKUP LINK** shares a link with all settings, including your RSS proxy, remote topic, countdown and FX alerts. Open it in Chrome on any phone and confirm to restore. The settings sit after the `#` in the link, so GitHub's servers never receive them. Keep the link private.
 
 ## Settings (long-press)
 
 | Setting | Notes |
 |---|---|
-| Last.fm username + API key | Get a key at https://www.last.fm/api/account/create. It is stored **only** in this browser's localStorage and is never in the code. |
+| New Releases artists | Comma-separated, up to 6. Names are matched in the iTunes catalogue once and cached. |
 | RSS feed URL | Defaults to `https://www.business-standard.com/rss/markets-106.rss` (checked 16 Nov 2026: valid RSS 2.0 with 35 items). |
 | CORS proxy | Required in the browser for that feed (see below). `{url}` is replaced by the encoded feed URL; otherwise the encoded URL is appended. |
 | "Feed allows CORS" | Tick this only for a feed that sends `Access-Control-Allow-Origin`. |
@@ -154,7 +155,9 @@ export default {
 | Frankfurter `api.frankfurter.dev/v1` | ✅ CORS `*` | The old `api.frankfurter.app` now 301-redirects here. |
 | Open-Meteo forecast | ✅ CORS `*` | Multi-location request returns an array. |
 | Business Standard RSS | ❌ **CORS-blocked** | Feed itself is fine; needs a proxy or the Android build. |
-| Last.fm `ws.audioscrobbler.com` | ✅ CORS `*` | Checked with an invalid key (readable 403 JSON). A real key was not tested. |
+| iTunes Search / Lookup (`itunes.apple.com`) | ✅ CORS `*` | Used for New Releases. Apple's chart RSS (`rss.marketingtools.apple.com`) has no CORS header and returned intermittent 502s, so charts aren't used. |
+| arrivelah (`arrivelah2.busrouter.sg`) | ✅ CORS `*` | Unofficial, community-run. The official LTA DataMall needs a key and a proxy. |
+| Open-Meteo air quality, Wikipedia feed | ✅ CORS `*` | |
 
 ## Verification
 
@@ -166,8 +169,15 @@ This serves `www/`, then drives headless Chromium at 360×800 CSS px @2× (= 720
 - Console errors: **none**.
 - Installability (`Page.getInstallabilityErrors`): **none**. Manifest parsed without errors, and the service worker controls the page.
 - Offline: the app shell loads from the service-worker cache and shows cached data.
-- Load with 4× CPU throttle and ~1.6 Mbps / 150 ms network: first frame at **~0.78 s**, 83 KB transferred.
-- Render cost (4× CPU throttle): clock 1 frame/s at 3% main thread. Map and headlines a steady 30 fps at 8–10%. Static pages (FX, weather) draw 0 fps until data changes. JS heap is about 2 MB.
+- Load with 4× CPU throttle and ~1.6 Mbps / 150 ms network: first frame at **~0.96 s** (v1.2; the bus map data loads afterwards in the background).
+- Render cost (4× CPU throttle): clock 1 frame/s at 3% main thread. Bus minimap 15 fps at ~5%. World map and headlines a steady 30 fps at 9–12%. Static pages (FX, weather) draw 0 fps until data changes. JS heap is about 3 MB.
+
+## Bus minimap data
+
+`www/minimap.js` (about 110 KB, loaded in the background after the first frame) holds simplified roads and coastline from OpenStreetMap (© OpenStreetMap contributors, ODbL) and the routes of the services at the two stops (busrouter.sg). To refresh it, for example after road changes or to add services, edit `SERVICES` in `tools/build-minimap.mjs`, then run:
+```bash
+node tools/build-minimap.mjs
+```
 
 ## Phase 2: Android APK (Capacitor)
 
@@ -213,7 +223,7 @@ With USB debugging enabled, `adb install -r app-debug.apk` also works.
 ## Not verified
 
 - **Real M07 hardware.** Everything above ran in headless Chromium emulating the screen size, not on the phone. That covers the 90 Hz / Helio G99 performance, the wake lock, the fullscreen tap and the "Add to Home screen" flow.
-- **Last.fm with a real API key.** The now-playing layout was checked with a **mocked** response (`TEST TRACK (MOCKED RESPONSE)` in `screenshots/configured-colour-music.png`).
+- **Bus positions on the real roads.** Buses are drawn from the GPS positions in the arrival feed; the map is a simplified snapshot, so a dot can sit slightly off its road.
 - **The Business Standard feed through a deployed proxy.** It was only tested through the harness's local proxy.
 - **The Android build.** It was not compiled, because there is no JDK or SDK here.
 - **Map coastlines.** These are hand-simplified polygons (roughly 1–3° accuracy). They're good enough for a dot-matrix display but are not survey-grade.
