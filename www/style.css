@@ -1,0 +1,87 @@
+:root {
+  --vfd: #5ff2d0;
+  --vfd-dim: #2b8f78;
+  --bg: #000;
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--vfd);
+  overflow: hidden;
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-user-select: none;
+  user-select: none;
+}
+#screen {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  display: block;
+  touch-action: none;
+  background: #000;
+  transition: opacity 2s linear;
+}
+body.night #screen { opacity: 0.3; }
+
+/* Reads the notch / rounded-corner insets for the canvas layout. */
+#safe {
+  position: fixed;
+  visibility: hidden;
+  pointer-events: none;
+  /* --safe-area-inset-* is injected by Capacitor's SystemBars on WebViews
+     without env() support; browsers fall back to env(). */
+  padding: var(--safe-area-inset-top, env(safe-area-inset-top, 0px))
+           var(--safe-area-inset-right, env(safe-area-inset-right, 0px))
+           var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px))
+           var(--safe-area-inset-left, env(safe-area-inset-left, 0px));
+}
+
+/* ---------- settings overlay ---------- */
+#settings {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  overflow-y: auto;
+  background: rgba(0, 0, 0, 0.96);
+  font: 15px/1.4 ui-monospace, "Roboto Mono", "Droid Sans Mono", Menlo, monospace;
+  letter-spacing: 0.04em;
+  text-shadow: 0 0 6px rgba(95, 242, 208, 0.55);
+  -webkit-user-select: text;
+  user-select: text;
+  padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right))
+           max(24px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+}
+#settings[hidden] { display: none; }
+#sf { max-width: 640px; margin: 0 auto; }
+#sf h1 { font-size: 20px; letter-spacing: 0.3em; margin: 4px 0 12px; }
+fieldset {
+  border: 1px dashed var(--vfd-dim);
+  margin: 0 0 14px;
+  padding: 8px 12px 10px;
+}
+legend { padding: 0 6px; color: var(--vfd); }
+label { display: block; margin: 8px 0; color: var(--vfd); }
+label.check { display: flex; gap: 10px; align-items: center; }
+input, select, button {
+  font: inherit;
+  color: var(--vfd);
+  background: #000;
+  border: 1px solid var(--vfd-dim);
+  border-radius: 0;
+  padding: 8px;
+  text-shadow: inherit;
+}
+input:not([type="checkbox"]), select { display: block; width: 100%; margin-top: 4px; }
+input[type="checkbox"] { width: 22px; height: 22px; accent-color: var(--vfd); }
+input:focus, select:focus, button:focus-visible { outline: 1px solid var(--vfd); }
+input::placeholder { color: #1f5f51; }
+.row { display: flex; gap: 12px; margin: 12px 0; }
+.row button { flex: 1; padding: 12px; letter-spacing: 0.2em; }
+button.ghost { border-style: dashed; }
+.note { color: var(--vfd-dim); font-size: 12px; margin: 6px 0 0; text-shadow: none; }
+#pagesField label.check { display: inline-flex; width: 48%; margin: 6px 0; }

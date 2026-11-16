@@ -1,0 +1,13 @@
+{
+  "appId": "io.github.missioncontrol.ticker",
+  "appName": "Mission Control",
+  "webDir": "www",
+  "android": {
+    "backgroundColor": "#000000"
+  },
+  "plugins": {
+    "CapacitorHttp": {
+      "enabled": true
+    }
+  }
+}

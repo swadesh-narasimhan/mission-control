@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#000000">
+<meta name="color-scheme" content="dark">
+<meta name="description" content="Always-on mission control ticker: clocks, ISS, quakes, FX, weather, headlines, now playing.">
+<title>Mission Control</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png" sizes="192x192" type="image/png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<canvas id="screen" aria-label="Mission control display"></canvas>
+<div id="safe" aria-hidden="true"></div>
+
+<div id="settings" hidden>
+  <form id="sf" autocomplete="off">
+    <h1>SETTINGS</h1>
+
+    <fieldset>
+      <legend>LAST.FM</legend>
+      <label>USERNAME <input name="lfmUser" spellcheck="false" autocapitalize="off"></label>
+      <label>API KEY <input name="lfmKey" type="password" autocomplete="new-password" spellcheck="false" autocapitalize="off"></label>
+      <p class="note">Stored only in this browser (localStorage). Get a key at last.fm/api/account/create.</p>
+    </fieldset>
+
+    <fieldset>
+      <legend>HEADLINES (RSS)</legend>
+      <label>FEED URL <input name="rssUrl" type="url" spellcheck="false" autocapitalize="off"></label>
+      <label>CORS PROXY <input name="rssProxy" spellcheck="false" autocapitalize="off" placeholder="https://your-proxy.example/?url={url}"></label>
+      <label class="check"><input name="rssDirect" type="checkbox"> FEED ALLOWS CORS - FETCH DIRECTLY</label>
+      <p class="note">Business Standard sends no CORS header, so a browser cannot read it directly. Use a proxy you control ({url} is replaced by the encoded feed URL; otherwise it is appended). The Android app build fetches natively and needs no proxy.</p>
+    </fieldset>
+
+    <fieldset>
+      <legend>COUNTDOWN</legend>
+      <label>EVENT <input name="cdName" maxlength="40"></label>
+      <label>DATE &amp; TIME <input name="cdDate" type="datetime-local"></label>
+    </fieldset>
+
+    <fieldset>
+      <legend>DISPLAY</legend>
+      <label>PALETTE
+        <select name="palette">
+          <option value="vfd">VFD TEAL</option>
+          <option value="color">FULL COLOUR</option>
+        </select>
+      </label>
+      <label>SECONDS PER PAGE <input name="dwell" type="number" min="3" max="120" step="1"></label>
+      <label class="check"><input name="nightDim" type="checkbox"> DIM 23:00-07:00</label>
+    </fieldset>
+
+    <fieldset id="pagesField">
+      <legend>PAGES</legend>
+    </fieldset>
+
+    <div class="row">
+      <button type="submit">SAVE</button>
+      <button type="button" id="sCancel">CANCEL</button>
+    </div>
+    <div class="row">
+      <button type="button" id="sClear" class="ghost">CLEAR CACHED DATA</button>
+    </div>
+    <p class="note" id="sInfo"></p>
+  </form>
+</div>
+
+<script src="app.js" defer></script>
+</body>
+</html>

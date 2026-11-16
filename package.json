@@ -1,0 +1,19 @@
+{
+  "name": "mission-control",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Always-on mission control ticker PWA (+ optional Capacitor Android wrapper)",
+  "scripts": {
+    "serve": "python3 -m http.server 8090 --directory www",
+    "icons": "node tools/make-icons.mjs",
+    "verify": "node tools/verify.mjs"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.6.0",
+    "playwright": "1.64.1"
+  },
+  "dependencies": {
+    "@capacitor/android": "8.6.0",
+    "@capacitor/core": "8.6.0"
+  }
+}
