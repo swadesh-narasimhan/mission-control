@@ -37,11 +37,19 @@
     rssUrl: 'https://www.business-standard.com/rss/markets-106.rss', rssProxy: '', rssDirect: false,
     cdName: 'TRAIN TRIP', cdDate: '',
     palette: 'vfd', dwell: 6, nightDim: true, notchMargin: 28,
+    remoteOn: true, remoteTopic: '',
     pages: { clock: true, map: true, fx: true, weather: true, news: true, music: true, countdown: true, credits: true }
   };
   function loadSettings() {
     const s = Object.assign({}, DEFAULTS, LS.get('mc.settings', {}));
     s.pages = Object.assign({}, DEFAULTS.pages, s.pages || {});
+    if (!s.remoteTopic) { // private, unguessable ntfy topic, created once per device
+      const b = new Uint8Array(10);
+      if (window.crypto && crypto.getRandomValues) crypto.getRandomValues(b);
+      else for (let i = 0; i < b.length; i++) b[i] = Math.floor(Math.random() * 256);
+      s.remoteTopic = 'mc-' + Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+      LS.set('mc.settings', s);
+    }
     return s;
   }
   let S = loadSettings();
@@ -489,7 +497,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
     }
   }
   function schedTick() {
-    if (document.hidden) return;
+    if (document.hidden || sleeping) return;
     const now = Date.now();
     const offline = navigator.onLine === false;
     for (const k in SRC) {
@@ -1189,7 +1197,9 @@ _ 00000 00000 00000 00000 00000 00000 11111
       ['g', ''],
       ['h', 'SYSTEM'],
       ['t', 'VERSION ' + APP_VERSION + (isNative() ? ' · ANDROID APP' : ' · PWA')],
-      ['t', 'WAKE LOCK ' + (wakeLock ? 'ON' : ('wakeLock' in navigator ? 'OFF' : 'UNSUPPORTED'))]
+      ['t', 'WAKE LOCK ' + (wakeLock ? 'ON' : ('wakeLock' in navigator ? 'OFF' : 'UNSUPPORTED'))],
+      ['t', 'MODE: ' + LAUNCH_MODE],
+      ['t', 'REMOTE SLEEP: ' + remoteState]
     ];
     let y = L.pad;
     for (const [k, s] of rows) {
@@ -1211,7 +1221,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
     news: { draw: drawNews, dyn: dynNews, dwellMul: 2, key: (now) => sig('news', now) + feedReady() },
     music: { draw: drawMusic, key: (now) => sig('music', now) + lfmReady() + (Math.floor(now / 1000) % 2) + Math.floor(now / 60e3) },
     countdown: { draw: drawCountdown, key: (now) => Math.floor(now / 1000) + S.cdDate + S.cdName },
-    credits: { draw: drawCredits, key: () => String(!!wakeLock) }
+    credits: { draw: drawCredits, key: () => String(!!wakeLock) + remoteState }
   };
 
   /* ================================================================ layers */
@@ -1376,6 +1386,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
   let pd = null;
   cv.addEventListener('pointerdown', (e) => {
     if (settingsOpen) return;
+    if (sleeping) { onTap(); return; }
     pd = { x: e.clientX, y: e.clientY, t: performance.now(), moved: false, long: false, id: e.pointerId };
     try { cv.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
     pd.timer = setTimeout(() => { if (pd && !pd.moved) { pd.long = true; openSettings(); } }, LONGPRESS_MS);
@@ -1398,6 +1409,11 @@ _ 00000 00000 00000 00000 00000 00000 11111
   cv.addEventListener('contextmenu', (e) => e.preventDefault());
 
   function onTap() {
+    if (sleeping) {
+      exitSleep();
+      if (!isFullscreen() && document.documentElement.requestFullscreen) document.documentElement.requestFullscreen({ navigationUI: 'hide' }).catch(() => {});
+      return;
+    }
     requestWake();
     if (!isFullscreen() && document.documentElement.requestFullscreen) {
       document.documentElement.requestFullscreen({ navigationUI: 'hide' }).catch(() => { paused = !paused; forceDraw = true; });
@@ -1429,18 +1445,78 @@ _ 00000 00000 00000 00000 00000 00000 11111
   /* ============================================================= wake lock */
   let wakeLock = null;
   async function requestWake() {
-    if (!('wakeLock' in navigator) || document.visibilityState !== 'visible' || wakeLock) return;
+    if (!('wakeLock' in navigator) || document.visibilityState !== 'visible' || wakeLock || sleeping) return;
     try {
       wakeLock = await navigator.wakeLock.request('screen');
       wakeLock.addEventListener('release', () => { wakeLock = null; });
     } catch (e) { wakeLock = null; /* needs a gesture or not allowed; retried on next tap/visibility */ }
   }
 
+  /* ====================================================== remote sleep/wake
+   * Listens on a private ntfy.sh topic (Server-Sent Events). An iPhone Shortcut
+   * opens https://ntfy.sh/<topic>/publish?message=off (or on). "off" releases the
+   * wake lock and blanks the display so Android's own screen timeout turns the
+   * screen off. Waking the screen, a tap, or "on" resumes. */
+  let sleeping = false, es = null, esTopic = '', remoteState = 'OFF';
+  const NTFY = 'https://ntfy.sh/';
+  function enterSleep() {
+    if (sleeping) return;
+    sleeping = true;
+    if (settingsOpen) closeSettings();
+    document.body.classList.add('sleep');
+    stop();
+    const wl = wakeLock; wakeLock = null;
+    if (wl) wl.release().catch(() => {});
+  }
+  function exitSleep() {
+    if (!sleeping) return;
+    sleeping = false;
+    document.body.classList.remove('sleep');
+    requestWake(); checkNight(); start(); schedTick();
+    forceDraw = true;
+  }
+  function handleRemote(msg) {
+    if (msg === 'off' || msg === 'sleep') enterSleep();
+    else if (msg === 'on' || msg === 'wake') exitSleep();
+    else if (msg === 'toggle') { if (sleeping) exitSleep(); else enterSleep(); }
+  }
+  function remoteConnect(force) {
+    if (navigator.onLine === false) { if (es) { es.close(); es = null; } esTopic = ''; remoteState = 'OFFLINE'; return; }
+    const want = S.remoteOn && S.remoteTopic && typeof EventSource === 'function' ? S.remoteTopic : '';
+    if (!force && es && esTopic === want && es.readyState !== 2) return;
+    if (!force && !es && esTopic === want && !want) return;
+    if (es) { es.close(); es = null; }
+    esTopic = want;
+    if (!want) { remoteState = 'OFF'; return; }
+    remoteState = 'CONNECTING';
+    es = new EventSource(NTFY + encodeURIComponent(want) + '/sse');
+    es.onopen = () => { remoteState = 'LISTENING'; };
+    es.onerror = () => { remoteState = es && es.readyState === 2 ? 'DISCONNECTED' : 'RECONNECTING'; };
+    es.onmessage = (ev) => {
+      let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+      if (!m || m.event !== 'message') return;
+      if (m.time && Date.now() / 1000 - m.time > 120) return; // ignore anything old
+      handleRemote(String(m.message || '').trim().toLowerCase());
+    };
+  }
+  setInterval(() => { if (!document.hidden) remoteConnect(false); }, 10e3);
+
   /* ========================================================== night dimming */
   function checkNight() {
     const h = new Date().getHours();
     document.body.classList.toggle('night', !!S.nightDim && (h >= 23 || h < 7));
   }
+
+  /* ====================================================== install / mode */
+  // How this page was launched, read before any requestFullscreen():
+  // an installed app reports display-mode fullscreen; a normal Chrome tab reports browser.
+  const LAUNCH_MODE = isNative() ? 'ANDROID APP'
+    : window.matchMedia('(display-mode: fullscreen)').matches ? 'INSTALLED APP'
+    : window.matchMedia('(display-mode: standalone)').matches ? 'INSTALLED APP (STANDALONE)'
+    : 'BROWSER TAB';
+  let installEvt = null;
+  window.addEventListener('beforeinstallprompt', (e) => { installEvt = e; });
+  window.addEventListener('appinstalled', () => { installEvt = null; });
 
   /* =============================================================== settings */
   const sEl = document.getElementById('settings'), sf = document.getElementById('sf');
@@ -1460,9 +1536,12 @@ _ 00000 00000 00000 00000 00000 00000 11111
     f.cdName.value = S.cdName; f.cdDate.value = S.cdDate; f.cdDate.min = '2026-01-01T00:00';
     f.palette.value = S.palette; f.dwell.value = S.dwell; f.nightDim.checked = !!S.nightDim;
     f.notchMargin.value = S.notchMargin;
+    f.remoteOn.checked = !!S.remoteOn; f.remoteTopic.value = S.remoteTopic;
+    showRemoteUrls();
+    document.getElementById('sInstall').hidden = !installEvt;
     for (const p of PAGE_DEFS) f['page_' + p.id].checked = !!S.pages[p.id];
-    document.getElementById('sInfo').textContent = 'v' + APP_VERSION + (isNative() ? ' · Android app (native HTTP)' : ' · PWA') +
-      ' · wake lock ' + (wakeLock ? 'on' : 'off');
+    document.getElementById('sInfo').textContent = 'v' + APP_VERSION + ' · running as: ' + LAUNCH_MODE.toLowerCase() +
+      ' · wake lock ' + (wakeLock ? 'on' : 'off') + ' · remote ' + remoteState.toLowerCase();
     sEl.hidden = false;
   }
   function closeSettings() { sEl.hidden = true; settingsOpen = false; forceDraw = true; }
@@ -1476,7 +1555,10 @@ _ 00000 00000 00000 00000 00000 00000 11111
       palette: f.palette.value === 'color' ? 'color' : 'vfd',
       dwell: Math.max(3, Math.min(120, parseInt(f.dwell.value, 10) || 6)),
       nightDim: f.nightDim.checked,
-      notchMargin: Math.max(0, Math.min(120, parseInt(f.notchMargin.value, 10) || 0)), pages: {}
+      notchMargin: Math.max(0, Math.min(120, parseInt(f.notchMargin.value, 10) || 0)),
+      remoteOn: f.remoteOn.checked,
+      remoteTopic: (f.remoteTopic.value.trim().replace(/[^A-Za-z0-9_-]/g, '') || old.remoteTopic).slice(0, 64),
+      pages: {}
     };
     for (const p of PAGE_DEFS) n.pages[p.id] = f['page_' + p.id].checked;
     S = n; LS.set('mc.settings', S);
@@ -1484,7 +1566,29 @@ _ 00000 00000 00000 00000 00000 00000 11111
     if (old.rssUrl !== n.rssUrl || old.rssProxy !== n.rssProxy || old.rssDirect !== n.rssDirect) resetSource('news');
     PAL = PALETTES[S.palette];
     layers.clear(); mapBase = null; newsCache.clear(); newsLayout = null; hdr.key = ftr.key = null;
-    resize(); rebuildPages(); checkNight(); closeSettings(); schedTick();
+    resize(); rebuildPages(); checkNight(); closeSettings(); schedTick(); remoteConnect(true);
+  });
+  function showRemoteUrls() {
+    const t = (sf.elements.remoteTopic.value.trim().replace(/[^A-Za-z0-9_-]/g, '')) || S.remoteTopic;
+    document.getElementById('remoteUrls').textContent =
+      'Sleep:  ' + NTFY + t + '/publish?message=off\nWake:   ' + NTFY + t + '/publish?message=on';
+  }
+  sf.elements.remoteTopic.addEventListener('input', showRemoteUrls);
+  document.getElementById('sSleep').addEventListener('click', () => { closeSettings(); enterSleep(); });
+  document.getElementById('sShare').addEventListener('click', async () => {
+    showRemoteUrls();
+    const txt = 'Mission Control remote sleep\n' + document.getElementById('remoteUrls').textContent;
+    const info = document.getElementById('sInfo');
+    try {
+      if (navigator.share) { await navigator.share({ title: 'Mission Control remote', text: txt }); return; }
+      await navigator.clipboard.writeText(txt); info.textContent = 'URLs copied to clipboard.';
+    } catch (e) { if (e && e.name !== 'AbortError') info.textContent = 'Could not share - long-press the URLs to copy them.'; }
+  });
+  document.getElementById('sInstall').addEventListener('click', async () => {
+    if (!installEvt) return;
+    const ev = installEvt; installEvt = null;
+    try { await ev.prompt(); } catch (e) { /* dismissed */ }
+    document.getElementById('sInstall').hidden = true;
   });
   document.getElementById('sCancel').addEventListener('click', closeSettings);
   document.getElementById('sClear').addEventListener('click', () => {
@@ -1500,12 +1604,13 @@ _ 00000 00000 00000 00000 00000 00000 11111
   /* ============================================================ lifecycle */
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) { stop(); return; }
-    requestWake(); checkNight(); schedTick(); start();
+    if (sleeping) { exitSleep(); remoteConnect(false); return; } // screen was woken (double-tap / power key)
+    requestWake(); checkNight(); schedTick(); start(); remoteConnect(false);
   });
   let rsT = 0;
   window.addEventListener('resize', relayoutSoon);
-  window.addEventListener('online', () => { for (const k in SRC) if (ST[k].fails) ST[k].next = 0; schedTick(); forceDraw = true; });
-  window.addEventListener('offline', () => { forceDraw = true; });
+  window.addEventListener('online', () => { for (const k in SRC) if (ST[k].fails) ST[k].next = 0; schedTick(); remoteConnect(true); forceDraw = true; });
+  window.addEventListener('offline', () => { remoteConnect(true); forceDraw = true; });
 
   resize();
   rebuildPages();
@@ -1515,10 +1620,11 @@ _ 00000 00000 00000 00000 00000 00000 11111
   setInterval(schedTick, 1000);
   setInterval(checkNight, 30e3);
   requestWake();
+  remoteConnect(true);
 
   if ('serviceWorker' in navigator && !isNative() && location.protocol !== 'file:') {
     window.addEventListener('load', () => { navigator.serviceWorker.register('sw.js').catch(() => { /* offline shell unavailable */ }); });
   }
   // test hook (harmless in production): lets the verifier jump to a page
-  window.__mc = { go: (id) => { const i = pages.indexOf(id); if (i >= 0) { cur = i; trans = null; dwellAcc = 0; paused = true; forceDraw = true; } }, state: ST, pages: () => pages.slice(), drawn: () => drawnFrames };
+  window.__mc = { go: (id) => { const i = pages.indexOf(id); if (i >= 0) { cur = i; trans = null; dwellAcc = 0; paused = true; forceDraw = true; } }, state: ST, pages: () => pages.slice(), drawn: () => drawnFrames, sleeping: () => sleeping, remote: () => remoteState, mode: LAUNCH_MODE };
 })();

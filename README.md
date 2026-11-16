@@ -67,6 +67,27 @@ Tips for 24/7 use:
 - **Settings → Apps → Chrome → Battery → Unrestricted**, so One UI doesn't freeze it.
 - Between 23:00 and 07:00 the display dims to about 30% (CSS opacity on a pure-black page). You can turn this off in Settings.
 
+### Address bar shows after the screen wakes?
+
+That means it's running in a **Chrome tab**, not as the installed app. In a tab, fullscreen is lost every time the screen turns off. Long-press → Settings: the grey line at the bottom says `running as: browser tab` or `installed app`. To fix it:
+1. Long-press → **INSTALL APP** (the button appears only when Chrome offers installation). Or use Chrome **⋮ → Add to Home screen → Install**, and pick *Install*, not *Create shortcut*.
+2. Delete any old home-screen shortcut and **launch from the new icon**. The app also appears in the app drawer and under Settings → Apps.
+The installed app has no address bar at all, and after waking it comes straight back fullscreen.
+
+## Remote sleep from the iPhone (free, no extra Android app)
+
+The ticker listens on a private [ntfy.sh](https://ntfy.sh) topic, which is randomly generated per phone and shown in Settings → REMOTE SLEEP.
+- **"off"**: the ticker releases the wake lock and blanks the display. Android's own screen timeout then switches the screen off.
+- **"on"**: wakes the ticker if the screen is still lit.
+- A web page can't turn a sleeping screen *on*. Wake it with **double-tap** (Settings → Advanced features → Motions and gestures → *Double tap to turn on screen*) or the side key. The ticker resumes by itself.
+
+Setup:
+1. On the M07: turn **off** Developer options → *Stay awake*, and set **Display → Screen timeout** to 15–30 s. The ticker's wake lock keeps the screen on while it's awake.
+2. Long-press → Settings → REMOTE SLEEP → **SHARE URLS**, and send them to yourself.
+3. On the iPhone, make a Shortcut "Desk off" with one action, **Get Contents of URL**, pointed at the *Sleep* URL. Make "Desk on" with the *Wake* URL if you want it. Put them on Back Tap, the Action Button, Control Center or Siri.
+
+Anyone who knows the topic can sleep your screen, so don't share it. If you need a new topic, edit it in Settings and update the Shortcuts.
+
 ## Settings (long-press)
 
 | Setting | Notes |

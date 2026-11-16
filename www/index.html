@@ -55,6 +55,16 @@
       <p class="note">Space kept clear on the notch side when the phone is sideways. 0 = off. Raise it if the notch still clips text.</p>
     </fieldset>
 
+    <fieldset>
+      <legend>REMOTE SLEEP (IPHONE)</legend>
+      <label class="check"><input name="remoteOn" type="checkbox"> LISTEN FOR SLEEP / WAKE MESSAGES</label>
+      <label>PRIVATE TOPIC <input name="remoteTopic" spellcheck="false" autocapitalize="off" maxlength="64"></label>
+      <p class="note">Put these in two iPhone Shortcuts ("Get Contents of URL"):</p>
+      <pre id="remoteUrls" class="urls"></pre>
+      <p class="note">"off" blanks the display and lets the phone's screen timeout switch it off. Turn OFF Developer options &rarr; Stay awake, and set Display &rarr; Screen timeout to 15&ndash;30 s. Wake with double-tap / power key (or "on" while the screen is still lit). Anyone who knows the topic can sleep the screen, so keep it private.</p>
+      <div class="row"><button type="button" id="sShare">SHARE URLS</button><button type="button" id="sSleep" class="ghost">SLEEP NOW</button></div>
+    </fieldset>
+
     <fieldset id="pagesField">
       <legend>PAGES</legend>
     </fieldset>
@@ -62,6 +72,9 @@
     <div class="row">
       <button type="submit">SAVE</button>
       <button type="button" id="sCancel">CANCEL</button>
+    </div>
+    <div class="row">
+      <button type="button" id="sInstall" hidden>INSTALL APP (TRUE FULLSCREEN)</button>
     </div>
     <div class="row">
       <button type="button" id="sClear" class="ghost">CLEAR CACHED DATA</button>
