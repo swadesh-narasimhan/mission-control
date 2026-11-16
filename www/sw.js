@@ -3,7 +3,7 @@
  * offline and instantly. Cross-origin API calls are NOT intercepted; the app
  * keeps its own last-good copies in localStorage.
  * Bump CACHE when you deploy changes. */
-const CACHE = 'mc-shell-v3';
+const CACHE = 'mc-shell-v4';
 const ASSETS = [
   './',
   'index.html',

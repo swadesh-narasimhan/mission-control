@@ -6,14 +6,17 @@ Pages rotate every 6 s (headlines get 12 s) with a horizontal slide:
 
 | # | Page | Source | Refresh |
 |---|------|--------|---------|
-| 1 | Clock: Singapore + India, date, UTC offset | device clock (`Intl`) | 1 s |
-| 2 | World map: ISS + 10-min trail, M4.5+ quakes (24 h), SIN/BLR markers, day/night | wheretheiss.at, USGS | 10 s / 5 min |
-| 3 | FX: USD/INR, SGD/INR, USD/SGD, ~6-week sparkline, ECB rate date | Frankfurter (ECB) | 1 h |
-| 4 | Weather: Singapore + Bengaluru | Open-Meteo (CC BY 4.0) | 15 min |
-| 5 | Headlines (scrolling) | your RSS feed | 10 min |
-| 6 | Now playing | Last.fm `user.getRecentTracks` | 15 s |
-| 7 | Countdown | settings | 1 s |
-| 8 | Credits / attribution | — | — |
+| 1 | Clock: Singapore + India, date, UTC offset, "On this day" (rotates hourly) | device clock, Wikipedia | 1 s / 6 h |
+| 2 | Bus radar: stops 16081 Aft Palm Green Condo + 16089 Aft Clementi Rd (Pasir Panjang Rd), live bus positions within 3 km, next/then arrivals, crowding colour | arrivelah (busrouter.sg, LTA data) | 30 s |
+| 3 | World map: ISS + 10-min trail, M4.5+ quakes (24 h), SIN/BLR markers, day/night | wheretheiss.at, USGS | 10 s / 5 min |
+| 4 | FX: USD/INR, SGD/INR, USD/SGD, ~6-week sparkline, ECB rate date, optional alert thresholds | Frankfurter (ECB) | 1 h |
+| 5 | Weather: Singapore + Bengaluru, AQI / PM2.5, sunrise/sunset, next-6-hours strip, rain-soon | Open-Meteo forecast + air quality (CC BY 4.0) | 15 / 30 min |
+| 6 | Headlines (scrolling) | your RSS feed | 10 min |
+| 7 | Now playing | Last.fm `user.getRecentTracks` | 15 s |
+| 8 | Countdown | settings | 1 s |
+| 9 | Credits / attribution | — | — |
+
+**Everywhere:** the header shows battery (`BAT 87%` / `CHG 87%`) next to stale/offline warnings. The footer flashes alerts: **rain expected within 90 min** (`RAIN SG ~25M`, from Open-Meteo's 15-minute forecast, which outside Europe/US is interpolated from hourly data) and **FX thresholds** you set in Settings → FX ALERTS (e.g. `>=95` for USD/INR).
 
 **Controls:** the first tap goes fullscreen, and later taps pause or resume rotation. Swipe left or right to change page. **Long-press (0.65 s) opens Settings.** With a keyboard: ← → change page, Space pauses, S opens Settings.
 
@@ -88,6 +91,22 @@ Setup:
 
 Anyone who knows the topic can sleep your screen, so don't share it. If you need a new topic, edit it in Settings and update the Shortcuts.
 
+**Other commands** (send as the message text, the same way as `off`):
+
+| Message | Effect |
+|---|---|
+| `msg Dinner in 10` | Big banner over the ticker for 2 minutes (tap to close). Also wakes a blanked display. |
+| `clear` | Removes the banner. |
+| `bus`, `weather`, `fx`, `clock`, `world`, `news`, `music`, `countdown` (or `page 3`) | Jumps to that page and holds it for 1 minute. |
+| `next` / `prev` / `pause` / `resume` | Page control. |
+| `colour` / `vfd` | Switch palette. |
+
+*Message Shortcut:* **Ask for Input** (Text) → **URL Encode** → **Text** `https://ntfy.sh/<topic>/publish?message=msg%20` followed by the *Encoded Text* variable → **Get Contents of URL**. "Hey Siri, desk message" then lets you dictate the text.
+
+## Settings backup
+
+Long-press → Settings → **BACKUP LINK** shares a link with all settings, including your Last.fm key, RSS proxy, remote topic, countdown and FX alerts. Open it in Chrome on any phone and confirm to restore. The settings sit after the `#` in the link, so GitHub's servers never receive them. Keep the link private.
+
 ## Settings (long-press)
 
 | Setting | Notes |
@@ -97,7 +116,8 @@ Anyone who knows the topic can sleep your screen, so don't share it. If you need
 | CORS proxy | Required in the browser for that feed (see below). `{url}` is replaced by the encoded feed URL; otherwise the encoded URL is appended. |
 | "Feed allows CORS" | Tick this only for a feed that sends `Access-Control-Allow-Origin`. |
 | Countdown | Event name (default `TRAIN TRIP`) and date/time. Until a date is set the page shows `DATE NOT SET`. |
-| Palette | `VFD TEAL` (mono) or `FULL COLOUR` (amber labels, red quakes, green/red FX moves). |
+| Palette | `VFD TEAL` (mono) or `FULL COLOUR` (amber labels, red quakes, green/red FX moves, bus crowding green/amber/red). |
+| FX alerts | Per pair: `>=95`, `<=93.5`, `>`, `<`; a bare number means `>=`. |
 | Seconds per page, night dimming, enabled pages | Disabled pages also stop fetching. |
 
 ### The Business Standard feed and CORS

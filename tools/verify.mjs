@@ -43,7 +43,7 @@ await new Promise((r) => server.listen(8099, '127.0.0.1', r));
 const ORIGIN = 'http://localhost:8099';
 const report = { console: [], apis: [], pages: [], installability: null, offline: null, perf: null, interactions: {} };
 
-const PAGES = ['clock', 'map', 'fx', 'weather', 'news', 'music', 'countdown', 'credits'];
+const PAGES = ['clock', 'bus', 'map', 'fx', 'weather', 'news', 'music', 'countdown', 'credits'];
 const VIEWPORTS = [
   { name: 'portrait', viewport: { width: 360, height: 800 } },
   { name: 'landscape', viewport: { width: 800, height: 360 } }
@@ -65,7 +65,7 @@ for (const vp of VIEWPORTS) {
   const page = await ctx.newPage();
   watch(page, vp.name);
   await page.goto(ORIGIN + '/');
-  await waitForData(page, ['iss', 'quakes', 'fx', 'wx']);
+  await waitForData(page, ['iss', 'quakes', 'fx', 'wx', 'aq', 'bus', 'otd']);
   await page.waitForTimeout(1500);
   for (const id of PAGES) {
     await page.evaluate((i) => window.__mc.go(i), id);
@@ -225,7 +225,7 @@ for (const vp of VIEWPORTS) {
   await cdp.send('Emulation.setCPUThrottlingRate', { rate: 4 });
   const metric = async () => Object.fromEntries((await cdp.send('Performance.getMetrics')).metrics.map((m) => [m.name, m.value]));
   report.render = {};
-  for (const id of ['clock', 'map', 'news', 'fx']) {
+  for (const id of ['clock', 'bus', 'map', 'news', 'fx']) {
     await page.evaluate((i) => window.__mc.go(i), id);
     await page.waitForTimeout(800);
     const f0 = await page.evaluate(() => window.__mc.drawn()); const m0 = await metric();

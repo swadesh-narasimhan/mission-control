@@ -5,7 +5,7 @@
  * when nothing moved. */
 'use strict';
 (function () {
-  const APP_VERSION = '1.0.0';
+  const APP_VERSION = '1.1.0';
   const SLIDE_MS = 520;
   const LONGPRESS_MS = 650;
 
@@ -24,6 +24,7 @@
   /* =============================================================== settings */
   const PAGE_DEFS = [
     { id: 'clock', title: 'CLOCK' },
+    { id: 'bus', title: 'BUS' },
     { id: 'map', title: 'WORLD' },
     { id: 'fx', title: 'FX RATES' },
     { id: 'weather', title: 'WEATHER' },
@@ -38,11 +39,13 @@
     cdName: 'TRAIN TRIP', cdDate: '',
     palette: 'vfd', dwell: 6, nightDim: true, notchMargin: 28,
     remoteOn: true, remoteTopic: '',
-    pages: { clock: true, map: true, fx: true, weather: true, news: true, music: true, countdown: true, credits: true }
+    fxAlerts: { usdinr: '', sgdinr: '', usdsgd: '' },
+    pages: { clock: true, bus: true, map: true, fx: true, weather: true, news: true, music: true, countdown: true, credits: true }
   };
   function loadSettings() {
     const s = Object.assign({}, DEFAULTS, LS.get('mc.settings', {}));
     s.pages = Object.assign({}, DEFAULTS.pages, s.pages || {});
+    s.fxAlerts = Object.assign({}, DEFAULTS.fxAlerts, s.fxAlerts || {});
     if (!s.remoteTopic) { // private, unguessable ntfy topic, created once per device
       const b = new Uint8Array(10);
       if (window.crypto && crypto.getRandomValues) crypto.getRandomValues(b);
@@ -146,6 +149,8 @@ _ 00000 00000 00000 00000 00000 00000 11111
 • 00000 00000 01110 01110 01110 00000 00000
 · 00000 00000 00000 00100 00000 00000 00000
 █ 11111 11111 11111 11111 11111 11111 11111
+● 00000 01110 11111 11111 11111 01110 00000
+○ 00000 01110 10001 10001 10001 01110 00000
 `;
   const FONT = new Map();
   for (const line of FONT_SRC.trim().split('\n')) {
@@ -336,6 +341,11 @@ _ 00000 00000 00000 00000 00000 00000 11111
 
   /* ============================================================ data layer */
   const CK = 'mc.cache.v1.';
+  const todayKey = () => { const d = new Date(); return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); };
+  const BUS_STOPS = [
+    { code: '16081', name: 'PALM GREEN', lat: 1.29196, lng: 103.76866 },
+    { code: '16089', name: 'CLEMENTI RD', lat: 1.29201, lng: 103.76908 }
+  ];
   const fmtDate = (d) => d.toISOString().slice(0, 10);
   const SRC = {
     iss: {
@@ -384,8 +394,9 @@ _ 00000 00000 00000 00000 00000 00000 11111
       on: () => S.pages.weather,
       url: () => 'https://api.open-meteo.com/v1/forecast?latitude=1.2897,12.9716&longitude=103.8501,77.5946' +
         '&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m,is_day' +
-        '&hourly=precipitation_probability&forecast_hours=3' +
-        '&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max&forecast_days=1&timezone=auto',
+        '&hourly=temperature_2m,precipitation_probability&forecast_hours=7' +
+        '&minutely_15=precipitation&forecast_minutely_15=8' +
+        '&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset&forecast_days=1&timezone=auto',
       parse(j) {
         const arr = Array.isArray(j) ? j : [j];
         if (arr.length < 2 || !arr[0].current) throw new Error('BAD DATA');
@@ -399,8 +410,50 @@ _ 00000 00000 00000 00000 00000 00000 11111
           rainNow: o.hourly && o.hourly.precipitation_probability ? o.hourly.precipitation_probability[0] : null,
           rainDay: o.daily && o.daily.precipitation_probability_max ? o.daily.precipitation_probability_max[0] : null,
           tmax: o.daily && o.daily.temperature_2m_max ? o.daily.temperature_2m_max[0] : null,
-          tmin: o.daily && o.daily.temperature_2m_min ? o.daily.temperature_2m_min[0] : null
+          tmin: o.daily && o.daily.temperature_2m_min ? o.daily.temperature_2m_min[0] : null,
+          off: o.utc_offset_seconds || 0,
+          sunrise: o.daily && o.daily.sunrise ? String(o.daily.sunrise[0]).slice(11, 16) : '',
+          sunset: o.daily && o.daily.sunset ? String(o.daily.sunset[0]).slice(11, 16) : '',
+          hours: o.hourly && o.hourly.time ? o.hourly.time.slice(1, 7).map((t, k) => ({
+            h: String(t).slice(11, 13), temp: o.hourly.temperature_2m[k + 1], pp: o.hourly.precipitation_probability[k + 1]
+          })) : [],
+          m15: o.minutely_15 && o.minutely_15.time ? { t: o.minutely_15.time, p: o.minutely_15.precipitation } : null
         }));
+      }
+    },
+    aq: {
+      every: 1800e3, retry: 60e3, timeout: 15e3,
+      on: () => S.pages.weather,
+      url: () => 'https://air-quality-api.open-meteo.com/v1/air-quality?latitude=1.2897,12.9716&longitude=103.8501,77.5946' +
+        '&current=us_aqi,pm2_5&timezone=auto',
+      parse(j) {
+        const arr = Array.isArray(j) ? j : [j];
+        if (arr.length < 2 || !arr[0].current) throw new Error('BAD DATA');
+        return arr.slice(0, 2).map((o) => ({ aqi: o.current.us_aqi, pm25: o.current.pm2_5 }));
+      }
+    },
+    bus: {
+      every: 30e3, retry: 15e3, timeout: 10e3,
+      on: () => S.pages.bus,
+      url: () => BUS_STOPS.map((b) => 'https://arrivelah2.busrouter.sg/?id=' + b.code),
+      parse(arr) {
+        const one = (n) => (n && n.time ? { t: Date.parse(n.time), lat: +n.lat || 0, lng: +n.lng || 0, load: n.load || '', type: n.type || '' } : null);
+        return arr.map((j, i) => {
+          if (!j || !Array.isArray(j.services)) throw new Error('BAD DATA');
+          return {
+            code: BUS_STOPS[i].code,
+            services: j.services.map((x) => ({ no: String(x.no), buses: [one(x.next), one(x.next2), one(x.next3)].filter(Boolean) }))
+          };
+        });
+      }
+    },
+    otd: {
+      every: 6 * 3600e3, retry: 60e3, timeout: 15e3,
+      on: () => S.pages.clock,
+      url: () => { const d = new Date(); return 'https://api.wikimedia.org/feed/v1/wikipedia/en/onthisday/selected/' + pad2(d.getMonth() + 1) + '/' + pad2(d.getDate()); },
+      parse(j) {
+        if (!j || !Array.isArray(j.selected)) throw new Error('BAD DATA');
+        return { date: todayKey(), items: j.selected.filter((x) => x && x.text).slice(0, 30).map((x) => ({ year: x.year, text: x.text })) };
       }
     },
     news: {
@@ -483,7 +536,9 @@ _ 00000 00000 00000 00000 00000 00000 11111
     const s = SRC[k], st = ST[k];
     st.busy = true; st.tried = true;
     try {
-      const raw = await fetchWithTimeout(s.url(), s.timeout, s.text);
+      const u = s.url();
+      const raw = Array.isArray(u) ? await Promise.all(u.map((x) => fetchWithTimeout(x, s.timeout, s.text)))
+        : await fetchWithTimeout(u, s.timeout, s.text);
       const data = s.parse(raw, st.data);
       st.data = data; st.ts = Date.now(); st.fails = 0; st.err = '';
       LS.set(CK + k, { data, ts: st.ts });
@@ -500,6 +555,8 @@ _ 00000 00000 00000 00000 00000 00000 11111
     if (document.hidden || sleeping) return;
     const now = Date.now();
     const offline = navigator.onLine === false;
+    const od = ST.otd;
+    if (od.data && od.data.date !== todayKey() && !od.fails && !od.busy) od.next = Math.min(od.next, now);
     for (const k in SRC) {
       const st = ST[k];
       if (!SRC[k].on() || st.busy || now < st.next) continue;
@@ -627,8 +684,24 @@ _ 00000 00000 00000 00000 00000 00000 11111
   }
 
   /* ---------- 1. clock ---------- */
+  function otdLines(w, now) {
+    const od = ST.otd.data;
+    if (!od || od.date !== todayKey() || !od.items.length) return null;
+    const it = od.items[new Date(now).getHours() % od.items.length];
+    const maxC = Math.floor((w - L.pad * 2 + L.s1) / (6 * L.s1));
+    return { head: 'ON THIS DAY · ' + it.year, lines: wrap(it.text, maxC, L.portrait ? 4 : 2) };
+  }
   function drawClock(g, w, h, now) {
     const d = new Date(now);
+    const od = otdLines(w, now);
+    const otdH = od ? (od.lines.length + 1) * LH * L.s1 + L.pad * 2 : 0;
+    if (od) {
+      let y = h - otdH + L.pad;
+      dotLine(g, L.pad, y - L.pad / 2, w - L.pad * 2, Math.max(1, L.s1 - 1), PAL.dim);
+      text(g, od.head, L.pad, y, L.s1, PAL.accent); y += LH * L.s1;
+      for (const ln of od.lines) { text(g, ln, L.pad, y, L.s1, PAL.dim); y += LH * L.s1; }
+      h -= otdH;
+    }
     const blocks = splitBlocks(w, h, 2);
     ZONES.forEach((z, i) => {
       const b = blocks[i]; const p = zoneParts(z.tz, d);
@@ -911,16 +984,32 @@ _ 00000 00000 00000 00000 00000 00000 11111
   }
 
   /* ---------- 3. FX ---------- */
+  const FX_PAIRS = [
+    { id: 'usdinr', name: 'USD/INR', f: (r) => r.inr, dp: 2 },
+    { id: 'sgdinr', name: 'SGD/INR', f: (r) => r.inr / r.sgd, dp: 2 },
+    { id: 'usdsgd', name: 'USD/SGD', f: (r) => r.sgd, dp: 4 }
+  ];
+  function parseFxRule(str) {
+    const m = /^\s*(>=|<=|>|<|=)?\s*([0-9]*\.?[0-9]+)\s*$/.exec(str || '');
+    return m ? { op: m[1] && m[1] !== '=' ? m[1] : '>=', v: parseFloat(m[2]) } : null;
+  }
+  function fxHit(pr, val) {
+    const r = parseFxRule(S.fxAlerts[pr.id]); if (!r) return null;
+    const ok = r.op === '>=' ? val >= r.v : r.op === '<=' ? val <= r.v : r.op === '>' ? val > r.v : val < r.v;
+    return ok ? r : null;
+  }
+  function fxAlertList() {
+    const d = ST.fx.data; if (!d || !d.series.length) return [];
+    const last = d.series[d.series.length - 1], out = [];
+    for (const pr of FX_PAIRS) { const r = fxHit(pr, pr.f(last)); if (r) out.push(pr.name + ' ' + r.op + ' ' + r.v); }
+    return out;
+  }
   function drawFx(g, w, h, now) {
     const st = status('fx', now), d = ST.fx.data;
     const bottom = statusLine(g, w, h, d ? 'ECB REF RATE ' + d.date + ' · FRANKFURTER' : 'FRANKFURTER (ECB)', st);
     if (!d) { centerMsg(g, w, bottom, st.none && ST.fx.fails ? 'NO DATA' : 'LOADING', ST.fx.err); return; }
     const S2 = d.series;
-    const pairs = [
-      { name: 'USD/INR', f: (r) => r.inr, dp: 2 },
-      { name: 'SGD/INR', f: (r) => r.inr / r.sgd, dp: 2 },
-      { name: 'USD/SGD', f: (r) => r.sgd, dp: 4 }
-    ];
+    const pairs = FX_PAIRS;
     const blocks = splitBlocks(w, bottom, 3);
     pairs.forEach((pr, i) => {
       const b = blocks[i];
@@ -929,10 +1018,12 @@ _ 00000 00000 00000 00000 00000 00000 11111
       const x = b.x + L.pad, bw = b.w - L.pad * 2;
       let y = b.y + L.pad;
       text(g, pr.name, x, y, L.s2, PAL.accent);
+      const hit = fxHit(pr, last);
+      if (hit) fitText(g, 'ALERT ' + hit.op + ' ' + hit.v, x + bw, y + th(L.s2) - th(L.s1), bw - tw(8, L.s2) - L.s1 * 2, L.s1, PAL.warn, 'right');
       y += th(L.s2) + L.s2 * 2;
       const rs = last.toFixed(pr.dp);
       const P = fitP(rs.length, bw, b.h * 0.26, L.s3 * 2);
-      text(g, rs, x, y, P, PAL.main, 'left', true);
+      text(g, rs, x, y, P, hit ? PAL.accent : PAL.main, 'left', true);
       y += th(P) + L.s2 * 2;
       if (prev != null) {
         const dv = last - prev, pct = (dv / prev) * 100;
@@ -992,42 +1083,216 @@ _ 00000 00000 00000 00000 00000 00000 11111
     return ['CODE ' + c, 'cloud'];
   };
   const deg = (v) => (v == null ? '--' : Math.round(v) + '°');
+  const pct = (v) => (v == null ? '--' : v + '%');
+  const AQI_CAT = (a) => (a <= 50 ? 'GOOD' : a <= 100 ? 'MODERATE' : a <= 150 ? 'SENSITIVE' : a <= 200 ? 'UNHEALTHY' : a <= 300 ? 'V.UNHEALTHY' : 'HAZARDOUS');
+  /* Open-Meteo minutely_15 'precipitation' is the sum over the 15 min ENDING at the slot time,
+     in the location's local time; convert with its utc_offset_seconds. */
+  function rainSoon(now) {
+    const d = ST.wx.data; if (!d || isStale('wx', now)) return [];
+    const out = [];
+    d.forEach((loc, i) => {
+      const m = loc.m15; if (!m || !m.t) return;
+      for (let k = 0; k < m.t.length; k++) {
+        const end = Date.parse(m.t[k] + ':00Z') - (loc.off || 0) * 1000, startT = end - 15 * 60e3;
+        if (end <= now) continue;
+        if (startT - now > 90 * 60e3) break;
+        if ((m.p[k] || 0) >= 0.1) {
+          const mins = Math.round((startT - now) / 60e3);
+          out.push({ loc: i, short: mins <= 0 ? 'NOW' : '~' + Math.max(5, Math.round(mins / 5) * 5) + 'M', code: i === 0 ? 'SG' : 'BLR' });
+          break;
+        }
+      }
+    });
+    return out;
+  }
   function drawWeather(g, w, h, now) {
     const st = status('wx', now), d = ST.wx.data;
-    const bottom = statusLine(g, w, h, 'WEATHER DATA BY OPEN-METEO.COM · CC BY 4.0', st);
+    const bottom = statusLine(g, w, h, 'WEATHER + AIR: OPEN-METEO.COM · CC BY 4.0', st);
     if (!d) { centerMsg(g, w, bottom, ST.wx.fails ? 'NO DATA' : 'LOADING', ST.wx.err); return; }
+    const aq = ST.aq.data, soon = rainSoon(now);
     const blocks = splitBlocks(w, bottom, 2);
+    const dp = L.portrait ? L.s1 : Math.max(2, L.s1 - 1);
     d.forEach((loc, i) => {
       const b = blocks[i];
       const x = b.x + L.pad, bw = b.w - L.pad * 2;
-      const fixedH = th(L.s2) + L.pad * 0.8 + L.s2 * 2 + th(L.s2) + L.s2 * 2 + 4 * LH * L.s1;
-      const PiPre = Math.max(2, Math.floor(Math.min(bw * 0.3, b.h - L.pad * 2 - fixedH) / 9));
-      let y = b.y + Math.max(L.pad, Math.round((b.h - fixedH - 9 * PiPre) / 2));
+      const maxC = Math.floor((bw + dp) / (6 * dp));
+      const a = aq && aq[i];
+      const lines = [
+        ['FEELS ' + deg(loc.feels) + '  HUM ' + pct(loc.hum), PAL.main],
+        ['WIND ' + (loc.wind == null ? '--' : Math.round(loc.wind) + ' KM/H') + ' · HI ' + deg(loc.tmax) + ' LO ' + deg(loc.tmin), PAL.main],
+        ['RAIN ' + pct(loc.rainNow) + ' THIS HR · ' + pct(loc.rainDay) + ' TODAY', PAL.main],
+        a && a.aqi != null
+          ? ['AQI ' + a.aqi + ' ' + AQI_CAT(a.aqi) + ' · PM2.5 ' + Math.round(a.pm25), a.aqi > 150 ? PAL.bad : a.aqi > 100 ? PAL.warn : PAL.main]
+          : ['AQI ' + (ST.aq.fails && !aq ? 'NO DATA' : '--') + (aq && isStale('aq', now) ? ' (STALE)' : ''), PAL.dim]
+      ];
+      if (loc.sunrise) lines.push(['SUNRISE ' + loc.sunrise + ' · SUNSET ' + loc.sunset, PAL.dim]);
+      const hours = (loc.hours || []).slice(0, 6);
+      const stripH = hours.length ? 3 * LH * dp + L.s2 * 2 : 0;
+      const fixedH = th(L.s2) + L.pad * 0.8 + L.s2 * 2 + th(L.s2) + L.s2 * 2 + lines.length * LH * dp + stripH;
+      const Pi = Math.max(2, Math.floor(Math.min(bw * 0.3, b.h - L.pad * 2 - fixedH) / 9));
+      let y = b.y + Math.max(L.pad, Math.round((b.h - fixedH - 9 * Pi) / 2));
       text(g, loc.name, x, y, L.s2, PAL.accent);
       if (loc.time) text(g, loc.time.slice(11, 16) + ' LOCAL', x + bw, y + th(L.s2) - th(L.s1), L.s1, PAL.dim, 'right');
       y += th(L.s2) + L.pad * 0.8;
       const [cond, ic] = WMO(loc.code);
       const iconName = (ic === 'sun' && loc.isDay === 0) ? 'moon' : ic;
-      const detailsH = 4 * LH * L.s1 + th(L.s2) + L.s2 * 2;
-      const avail = b.y + b.h - L.pad - y - detailsH;
-      const Pi = Math.max(2, Math.min(PiPre, Math.floor(Math.min(bw * 0.3, avail) / 9)));
       icon(g, iconName, x, y, Pi, PAL.main, PAL.dim);
       const ts = deg(loc.temp) + 'C';
       const Pt = fitP(ts.length, bw - 9 * Pi - L.pad, 9 * Pi * 0.8, L.s3 * 3);
       text(g, ts, x + 9 * Pi + L.pad, y + (9 * Pi - th(Pt)) / 2, Pt, PAL.main, 'left', true);
       y += 9 * Pi + L.s2 * 2;
       text(g, cond, x, y, L.s2, PAL.main);
+      const rs = soon.find((r) => r.loc === i);
+      if (rs) text(g, 'RAIN ' + rs.short, x + bw, y + th(L.s2) - th(L.s1), L.s1, PAL.warn, 'right');
       y += th(L.s2) + L.s2 * 2;
-      const lines = [
-        'FEELS ' + deg(loc.feels) + '  HUM ' + (loc.hum == null ? '--' : loc.hum + '%'),
-        'WIND ' + (loc.wind == null ? '--' : Math.round(loc.wind) + ' KM/H'),
-        'RAIN ' + (loc.rainNow == null ? '--' : loc.rainNow + '%') + ' THIS HR · ' + (loc.rainDay == null ? '--' : loc.rainDay + '%') + ' TODAY',
-        'HI ' + deg(loc.tmax) + '  LO ' + deg(loc.tmin)
-      ];
-      const maxC = Math.floor(bw / (6 * L.s1));
-      for (const ln of lines) { text(g, clip(ln, maxC), x, y, L.s1, PAL.main); y += LH * L.s1; }
+      for (const [ln, col] of lines) { text(g, clip(ln, maxC), x, y, dp, col); y += LH * dp; }
+      if (hours.length) {
+        y += L.s2;
+        dotLine(g, x, y - L.s2 / 2, bw, Math.max(1, dp - 1), PAL.dim);
+        y += L.s2 / 2;
+        const cw = bw / hours.length;
+        hours.forEach((hr, k) => {
+          const cx = x + cw * k + cw / 2;
+          text(g, hr.h, cx, y, dp, PAL.dim, 'center');
+          text(g, deg(hr.temp), cx, y + LH * dp, dp, PAL.main, 'center');
+          text(g, pct(hr.pp), cx, y + 2 * LH * dp, dp, hr.pp >= 50 ? PAL.warn : PAL.dim, 'center');
+        });
+      }
     });
     blockDividers(g, w, bottom, 2);
+  }
+
+  /* ---------- bus radar (stops 16081 + 16089, Pasir Panjang Rd) ---------- */
+  const BUS_C = { lat: (BUS_STOPS[0].lat + BUS_STOPS[1].lat) / 2, lng: (BUS_STOPS[0].lng + BUS_STOPS[1].lng) / 2 };
+  const BUS_RANGE_M = 3000;
+  function busGeom(w, h) {
+    const pad = L.pad, statusH = th(L.s1) + pad * 2;
+    if (L.portrait) {
+      const top = pad + th(L.s1);
+      const R = Math.floor(Math.min(w - pad * 2, (h - statusH) * 0.56 - top) / 2);
+      return { cx: Math.round(w / 2), cy: top + R, R, lx: pad, ly: top + R * 2 + pad, lw: w - pad * 2 };
+    }
+    const top = Math.round(pad / 2) + th(L.s1) + L.s1;
+    const R = Math.floor((h - statusH - top) / 2);
+    return { cx: pad + R, cy: top + R, R, lx: pad * 3 + R * 2, ly: pad, lw: w - (pad * 4 + R * 2) };
+  }
+  function busXY(G, lat, lng) {
+    const dx = (lng - BUS_C.lng) * 111320 * Math.cos(BUS_C.lat * Math.PI / 180);
+    const dy = (lat - BUS_C.lat) * 110574;
+    const dist = Math.hypot(dx, dy), ang = Math.atan2(dx, dy); // bearing, clockwise from north
+    const r = Math.min(dist, BUS_RANGE_M) / BUS_RANGE_M * G.R * (dist > BUS_RANGE_M ? 0.96 : 1);
+    return { x: G.cx + Math.sin(ang) * r, y: G.cy - Math.cos(ang) * r, ang: (ang + Math.PI * 2) % (Math.PI * 2), out: dist > BUS_RANGE_M, dist };
+  }
+  const busMin = (t, now) => { const ms = t - now; return ms <= 60e3 ? 'ARR' : Math.floor(ms / 60e3) + 'M'; };
+  const loadCol = (l) => (l === 'SEA' ? PAL.good : l === 'SDA' ? PAL.warn : l === 'LSD' ? PAL.bad : PAL.main);
+  function drawBus(g, w, h, now) {
+    const st = status('bus', now), d = ST.bus.data;
+    statusLine(g, w, h, 'BUS: ARRIVELAH (BUSROUTER.SG) · LTA DATA', st);
+    const G = busGeom(w, h), p = L.s1, lp = Math.max(2, p - 1);
+    // range rings, cross-hair, north
+    g.fillStyle = PAL.dim;
+    for (const m of [1000, 2000, 3000]) {
+      const r = m / BUS_RANGE_M * G.R, n = Math.max(24, Math.round(r / (p * 2.2)));
+      g.globalAlpha = m === BUS_RANGE_M ? 0.7 : 0.45; g.beginPath();
+      for (let k = 0; k < n; k++) { const a = k / n * Math.PI * 2, xx = G.cx + Math.cos(a) * r, yy = G.cy + Math.sin(a) * r; g.moveTo(xx + p * 0.3, yy); g.arc(xx, yy, p * 0.3, 0, Math.PI * 2); }
+      g.fill(); g.globalAlpha = 1;
+      text(g, m < 1000 ? m + 'M' : m / 1000 + 'KM', G.cx + r * 0.71 + lp, G.cy - r * 0.71 - th(lp) - lp, lp, PAL.dim);
+    }
+    g.globalAlpha = 0.25; g.beginPath();
+    for (let k = -G.R; k <= G.R; k += p * 3) { g.moveTo(G.cx + k + p * 0.25, G.cy); g.arc(G.cx + k, G.cy, p * 0.25, 0, Math.PI * 2); g.moveTo(G.cx + p * 0.25, G.cy + k); g.arc(G.cx, G.cy + k, p * 0.25, 0, Math.PI * 2); }
+    g.fill(); g.globalAlpha = 1;
+    text(g, 'N', G.cx, G.cy - G.R - th(lp) - lp, lp, PAL.dim, 'center');
+    g.strokeStyle = PAL.home; g.lineWidth = Math.max(1, p * 0.4);
+    g.strokeRect(G.cx - p * 1.3, G.cy - p * 1.3, p * 2.6, p * 2.6);
+    if (!d) {
+      text(g, ST.bus.fails ? 'NO DATA' : 'LOADING', G.lx, G.ly, L.s2, PAL.main);
+      if (ST.bus.err) fitText(g, ST.bus.err, G.lx, G.ly + LH * L.s2, G.lw, p, PAL.dim);
+      return;
+    }
+    // arrival lists, one column per stop
+    const colW = G.lw / 2, lh = LH * p;
+    const maxRows = Math.floor((h - G.ly - L.pad * 2 - th(L.s1) - lh * 2.2) / lh);
+    d.forEach((stop, i) => {
+      const x = G.lx + colW * i, info = BUS_STOPS[i];
+      const cols = Math.floor((colW - L.pad / 2 + p) / (6 * p));
+      let y = G.ly;
+      text(g, clip((i === 0 ? '● ' : '○ ') + info.name, cols), x, y, p, PAL.accent); y += lh;
+      text(g, info.code + ' NEXT THEN', x, y, lp, PAL.dim); y += lh * 1.2;
+      const rows = stop.services.map((sv) => ({ no: sv.no, b: sv.buses.filter((bb) => bb.t > now - 30e3) }))
+        .filter((r) => r.b.length).sort((a, b) => a.b[0].t - b.b[0].t);
+      rows.slice(0, Math.max(0, maxRows)).forEach((r) => {
+        text(g, r.no, x, y, p, PAL.main);
+        text(g, busMin(r.b[0].t, now), x + 5 * 6 * p, y, p, loadCol(r.b[0].load));
+        if (r.b[1]) text(g, busMin(r.b[1].t, now), x + 9 * 6 * p, y, p, PAL.dim);
+        y += lh;
+      });
+      if (!rows.length) text(g, 'NO BUSES', x, y, p, PAL.dim);
+    });
+  }
+  /* Pre-rendered pieces so the 30 fps radar only stamps bitmaps. */
+  let sweepImg = null;
+  function getSweep(R) {
+    const key = R + '|' + S.palette;
+    if (sweepImg && sweepImg.key === key) return sweepImg.c;
+    const c = mkCanvas(R * 2, R * 2), g = c.getContext('2d');
+    const [r0, g0, b0] = rgb(PAL.main), wedge = Math.PI / 2.5;
+    if (g.createConicGradient) { // wedge trailing the sweep line, which points north (up)
+      const cg = g.createConicGradient(-Math.PI / 2 - wedge, R, R);
+      cg.addColorStop(0, `rgba(${r0},${g0},${b0},0)`);
+      cg.addColorStop(wedge / (Math.PI * 2), `rgba(${r0},${g0},${b0},0.22)`);
+      cg.addColorStop(wedge / (Math.PI * 2) + 0.001, `rgba(${r0},${g0},${b0},0)`);
+      cg.addColorStop(1, `rgba(${r0},${g0},${b0},0)`);
+      g.fillStyle = cg; g.beginPath(); g.arc(R, R, R, 0, Math.PI * 2); g.fill();
+    }
+    g.strokeStyle = PAL.main; g.globalAlpha = 0.8; g.lineWidth = Math.max(1, L.s1 * 0.35);
+    g.beginPath(); g.moveTo(R, R); g.lineTo(R, 0); g.stroke();
+    sweepImg = { key, c };
+    return c;
+  }
+  const labelCache = new Map();
+  function labelImg(str, p, color) {
+    const key = str + '|' + p + '|' + color;
+    let c = labelCache.get(key);
+    if (!c) {
+      if (labelCache.size > 200) labelCache.clear();
+      c = mkCanvas(tw(norm(str).length, p) + p * 4, th(p) + p * 4);
+      text(c.getContext('2d'), str, p * 2, p * 2, p, color);
+      labelCache.set(key, c);
+    }
+    return c;
+  }
+  function dynBus(g, w, h, now, ts) {
+    const G = busGeom(w, h), d = ST.bus.data;
+    const sweep = ((ts % 4000) / 4000) * Math.PI * 2; // bearing of the sweep line
+    g.save(); g.translate(G.cx, G.cy); g.rotate(sweep);
+    g.drawImage(getSweep(G.R), -G.R, -G.R);
+    g.restore();
+    if (!d) return;
+    const lp = Math.max(2, L.s1 - 1), bp = Math.max(2, Math.round(L.s1 * 1.1));
+    d.forEach((stop, i) => {
+      for (const sv of stop.services) {
+        sv.buses.forEach((bb, k) => {
+          if (!bb.lat || !bb.lng || bb.t < now - 30e3) return;
+          const P = busXY(G, bb.lat, bb.lng);
+          const since = ((sweep - P.ang) + Math.PI * 4) % (Math.PI * 2);
+          const glow = (P.out ? 0.35 : 0.45) + 0.55 * (1 - since / (Math.PI * 2));
+          g.globalAlpha = glow * (k === 0 ? 1 : 0.6);
+          if (i === 0) {
+            const sp = sprite(PAL.main, bp, 'glow');
+            g.globalCompositeOperation = 'lighter'; g.drawImage(sp, P.x - sp.width / 2, P.y - sp.height / 2); g.globalCompositeOperation = 'source-over';
+          } else {
+            g.strokeStyle = PAL.accent; g.lineWidth = Math.max(1, L.s1 * 0.4);
+            g.beginPath(); g.arc(P.x, P.y, bp * 0.8, 0, Math.PI * 2); g.stroke();
+          }
+          if (k === 0) {
+            const im = labelImg(sv.no, lp, i === 0 ? PAL.main : PAL.accent), lw = im.width - lp * 4;
+            const right = P.x + bp * 1.4 + lw < w - 2;
+            g.drawImage(im, Math.round((right ? P.x + bp * 1.4 : P.x - bp * 1.4 - lw) - lp * 2), Math.round(P.y - th(lp) / 2 - lp * 2));
+          }
+          g.globalAlpha = 1;
+        });
+      }
+    });
   }
 
   /* ---------- 5. headlines ---------- */
@@ -1184,22 +1449,22 @@ _ 00000 00000 00000 00000 00000 00000 11111
     const p = L.s1, maxC = Math.floor((w - L.pad * 2) / (6 * p));
     const rows = [
       ['h', 'DATA SOURCES'],
-      ['t', 'WEATHER DATA BY OPEN-METEO.COM (CC BY 4.0)'],
-      ['t', 'EARTHQUAKES: U.S. GEOLOGICAL SURVEY (USGS) - PUBLIC DOMAIN'],
-      ['t', 'ISS POSITION: WHERETHEISS.AT API'],
-      ['t', 'FX: FRANKFURTER API - ECB REFERENCE RATES (DAILY, NOT LIVE). SGD/INR = ECB CROSS RATE.'],
-      ['t', 'HEADLINES: YOUR RSS FEED (DEFAULT BUSINESS STANDARD MARKETS)'],
-      ['t', 'NOW PLAYING: LAST.FM API'],
-      ['t', 'MAP: SIMPLIFIED COASTLINES · DAY/NIGHT FROM SOLAR ALMANAC'],
+      ['t', 'WEATHER + AIR: OPEN-METEO.COM (CC BY 4.0), AIR DATA CAMS'],
+      ['t', 'BUS: ARRIVELAH (BUSROUTER.SG), DATA FROM LTA DATAMALL'],
+      ['t', 'QUAKES: USGS · ISS: WHERETHEISS.AT'],
+      ['t', 'FX: FRANKFURTER - ECB DAILY REFERENCE RATES'],
+      ['t', 'ON THIS DAY: WIKIPEDIA (CC BY-SA 4.0)'],
+      ['t', 'HEADLINES: YOUR RSS FEED · MUSIC: LAST.FM'],
       ['g', ''],
       ['h', 'CONTROLS'],
-      ['t', 'TAP: FULLSCREEN, THEN PAUSE/RESUME · SWIPE: CHANGE PAGE · HOLD: SETTINGS'],
+      ['t', 'TAP: FULLSCREEN / PAUSE · SWIPE: PAGE · HOLD: SETTINGS'],
       ['g', ''],
       ['h', 'SYSTEM'],
       ['t', 'VERSION ' + APP_VERSION + (isNative() ? ' · ANDROID APP' : ' · PWA')],
       ['t', 'WAKE LOCK ' + (wakeLock ? 'ON' : ('wakeLock' in navigator ? 'OFF' : 'UNSUPPORTED'))],
       ['t', 'MODE: ' + LAUNCH_MODE],
-      ['t', 'REMOTE SLEEP: ' + remoteState]
+      ['t', 'REMOTE: ' + remoteState],
+      ['t', 'BATTERY: ' + (battery ? Math.round(battery.level * 100) + '%' + (battery.charging ? ' CHARGING' : '') : 'UNKNOWN')]
     ];
     let y = L.pad;
     for (const [k, s] of rows) {
@@ -1214,14 +1479,15 @@ _ 00000 00000 00000 00000 00000 00000 11111
   }
 
   const PAGES = {
-    clock: { draw: drawClock, key: (now) => Math.floor(now / 1000) },
+    clock: { draw: drawClock, key: (now) => Math.floor(now / 1000) + sig('otd', now) },
+    bus: { draw: drawBus, dyn: dynBus, fps: 15, dwellMul: 1.5, key: (now) => sig('bus', now) + Math.floor(now / 5000) },
     map: { draw: drawMap, dyn: dynMap, key: (now) => sig('iss', now) + sig('quakes', now) + Math.floor(now / 60e3) },
     fx: { draw: drawFx, key: (now) => sig('fx', now) },
-    weather: { draw: drawWeather, key: (now) => sig('wx', now) },
+    weather: { draw: drawWeather, key: (now) => sig('wx', now) + sig('aq', now) + Math.floor(now / 60e3) },
     news: { draw: drawNews, dyn: dynNews, dwellMul: 2, key: (now) => sig('news', now) + feedReady() },
     music: { draw: drawMusic, key: (now) => sig('music', now) + lfmReady() + (Math.floor(now / 1000) % 2) + Math.floor(now / 60e3) },
     countdown: { draw: drawCountdown, key: (now) => Math.floor(now / 1000) + S.cdDate + S.cdName },
-    credits: { draw: drawCredits, key: () => String(!!wakeLock) + remoteState }
+    credits: { draw: drawCredits, key: () => String(!!wakeLock) + remoteState + (battery ? Math.round(battery.level * 100) + '' + battery.charging : '') }
   };
 
   /* ================================================================ layers */
@@ -1263,15 +1529,18 @@ _ 00000 00000 00000 00000 00000 00000 11111
     const def = PAGE_DEFS.find((p) => p.id === id);
     const online = navigator.onLine !== false;
     const sc = staleCount(now);
-    const key = [idx, id, online, sc, S.palette, W, H].join('|');
+    const bat = battery ? (battery.charging ? 'CHG ' : 'BAT ') + Math.round(battery.level * 100) + '%' : '';
+    const key = [idx, id, online, sc, bat, S.palette, W, H].join('|');
     if (hdr.key === key && hdr.c) return hdr.c;
     const c = hdr.c && hdr.c.width === W && hdr.c.height === L.uy + L.hdrH ? hdr.c : mkCanvas(W, L.uy + L.hdrH);
     const g = c.getContext('2d'); g.clearRect(0, 0, c.width, c.height);
     const p = L.s1, y = L.uy + L.pad;
-    text(g, pad2(idx + 1) + ' ' + (def ? def.title : ''), L.ux + L.pad, y, p, PAL.main);
-    let right = online ? 'ONLINE' : 'OFFLINE';
-    if (sc) right = sc + ' STALE · ' + right;
-    text(g, right, L.ux + L.uw - L.pad, y, p, online && !sc ? PAL.dim : PAL.warn, 'right');
+    const left = pad2(idx + 1) + ' ' + (def ? def.title : '');
+    text(g, left, L.ux + L.pad, y, p, PAL.main);
+    const right = [sc ? sc + ' STALE' : '', online ? '' : 'OFFLINE', bat || (online ? 'ONLINE' : '')].filter(Boolean).join(' · ');
+    const cols = Math.floor((L.uw - L.pad * 2 + p) / (6 * p));
+    const lowBat = battery && !battery.charging && battery.level < 0.2;
+    text(g, clip(right, cols - norm(left).length - 2), L.ux + L.uw - L.pad, y, p, online && !sc && !lowBat ? PAL.dim : PAL.warn, 'right');
     dotLine(g, L.ux + L.pad, L.uy + L.hdrH - 1, L.uw - L.pad * 2, Math.max(1, p - 1), PAL.dim);
     hdr.c = c; hdr.key = key;
     return c;
@@ -1279,7 +1548,10 @@ _ 00000 00000 00000 00000 00000 00000 11111
   function drawFooter(now) {
     const idx = trans ? trans.to : cur;
     const fs = isFullscreen();
-    const hint = paused ? '' : !fs ? 'TAP: FULLSCREEN' : (now - bootAt < 60e3 ? 'HOLD: SETTINGS' : '');
+    const al = alertsNow(now);
+    const alertTxt = al.length ? al[Math.floor(now / 3000) % al.length] : '';
+    const hint = alertTxt || (paused ? '' : !fs ? 'TAP: FULLSCREEN' : (now - bootAt < 60e3 ? 'HOLD: SETTINGS' : ''));
+    const hintCol = alertTxt ? PAL.warn : PAL.dim;
     const key = [idx, pages.length, paused, hint, S.palette, W, H].join('|');
     const fh = L.ftrH + (H - L.uy - L.uh);
     if (ftr.key === key && ftr.c) return ftr.c;
@@ -1303,14 +1575,64 @@ _ 00000 00000 00000 00000 00000 00000 11111
     dotLine(g, L.ux + L.pad, 1, L.uw - L.pad * 2, Math.max(1, p - 1), PAL.dim);
     if (centred) {
       if (leftTxt) text(g, leftTxt, L.ux + L.pad, L.pad, p, PAL.warn);
-      if (hint) text(g, hint, L.ux + L.uw - L.pad, L.pad, p, PAL.dim, 'right');
+      if (hint) text(g, hint, L.ux + L.uw - L.pad, L.pad, p, hintCol, 'right');
     } else {
       const right = [leftTxt, hint].filter(Boolean).join(' · ');
       const free = cols - Math.ceil((dotsW + gap * 2) / (6 * p)) - 1;
-      text(g, clip(right, free), L.ux + L.uw - L.pad, L.pad, p, paused ? PAL.warn : PAL.dim, 'right');
+      text(g, clip(right, free), L.ux + L.uw - L.pad, L.pad, p, paused || alertTxt ? PAL.warn : PAL.dim, 'right');
     }
     ftr.c = c; ftr.key = key;
     return c;
+  }
+
+  let alertCache = { sec: -1, list: [] };
+  function alertsNow(now) {
+    const sec = Math.floor(now / 1000);
+    if (alertCache.sec !== sec) {
+      alertCache = { sec, list: rainSoon(now).map((r) => 'RAIN ' + r.code + ' ' + r.short).concat(fxAlertList()) };
+    }
+    return alertCache.list;
+  }
+
+  /* ---------- message banner (remote "msg ...") ---------- */
+  let banner = null, holdUntil = 0, lastBannerTick = -1;
+  function showBanner(t) {
+    if (sleeping) exitSleep();
+    banner = { text: String(t).slice(0, 240), at: Date.now(), until: Date.now() + 120e3, c: null, key: '' };
+    forceDraw = true;
+  }
+  function drawBanner(now) {
+    if (!banner) return;
+    if (now > banner.until) { banner = null; forceDraw = true; return; }
+    const key = [banner.text, W, H, S.palette].join('|');
+    if (banner.key !== key) {
+      const bw = L.cw - L.pad * 2, inner = bw - L.pad * 2;
+      let p = L.s3 * 2, lines;
+      const longest = Math.max.apply(null, norm(banner.text).split(' ').map((x) => x.length));
+      for (; p > L.s1; p--) {
+        const cols = Math.floor((inner + p) / (6 * p));
+        lines = wrap(banner.text, cols);
+        if (longest <= cols && lines.length * LH * p <= L.ch * 0.5) break;
+      }
+      lines = wrap(banner.text, Math.floor((inner + p) / (6 * p)), 8);
+      const bh = L.pad * 2 + th(L.s1) + L.s1 * 4 + lines.length * LH * p;
+      const c = mkCanvas(bw, bh), g = c.getContext('2d');
+      g.fillStyle = '#000'; g.fillRect(0, 0, bw, bh);
+      const e = Math.max(1, L.s1 - 1);
+      dotLine(g, e, e, bw - e * 2, e, PAL.accent); dotLine(g, e, bh - e, bw - e * 2, e, PAL.accent);
+      g.fillStyle = PAL.accent; g.globalAlpha = 0.5; g.beginPath();
+      for (let yy = e; yy <= bh - e; yy += e * 2) { g.moveTo(e * 1.3, yy); g.arc(e, yy, e * 0.3, 0, Math.PI * 2); g.moveTo(bw - e * 0.7, yy); g.arc(bw - e, yy, e * 0.3, 0, Math.PI * 2); }
+      g.fill(); g.globalAlpha = 1;
+      text(g, 'MESSAGE · ' + hhmm(banner.at), bw / 2, L.pad, L.s1, PAL.accent, 'center');
+      lines.forEach((ln, k) => text(g, ln, bw / 2, L.pad + th(L.s1) + L.s1 * 4 + k * LH * p, p, PAL.main, 'center'));
+      banner.c = c; banner.key = key;
+    }
+    const bx = L.cx + L.pad, by = Math.round(L.cy + (L.ch - banner.c.height) / 2);
+    ctx.drawImage(banner.c, bx, by);
+    if (now - banner.at < 10e3 && Math.floor(now / 500) % 2) { // attention pulse for the first 10 s
+      ctx.strokeStyle = PAL.accent; ctx.lineWidth = Math.max(2, L.s1 * 0.7);
+      ctx.strokeRect(bx + ctx.lineWidth / 2, by + ctx.lineWidth / 2, banner.c.width - ctx.lineWidth, banner.c.height - ctx.lineWidth);
+    }
   }
 
   /* ============================================================ frame loop */
@@ -1324,16 +1646,21 @@ _ 00000 00000 00000 00000 00000 00000 11111
     if (!pages.length || !W) return;
     const now = Date.now();
 
-    if (!paused && !settingsOpen && !trans && pages.length > 1) {
+    if (!paused && !settingsOpen && !trans && pages.length > 1 && now >= holdUntil) {
       dwellAcc += dt * 1000;
       const def = PAGES[pages[cur]];
       if (dwellAcc >= S.dwell * 1000 * (def.dwellMul || 1)) go(1);
     }
     let need = forceDraw;
     if (trans) need = true;
-    for (const id of visibleIds()) if (PAGES[id].dyn || layerDirty(id, now)) need = true;
+    for (const id of visibleIds()) {
+      const P = PAGES[id];
+      if (layerDirty(id, now)) need = true;
+      else if (P.dyn && (!P.fps || trans || ts - (dynLast[id] || 0) >= 1000 / P.fps - 4)) need = true;
+    }
     const hc = drawHeader(now), fc = drawFooter(now);
     if (hc !== lastHc || hdr.key !== lastHk || ftr.key !== lastFk) need = true;
+    if (banner) { const bt = Math.floor(now / 500); if (bt !== lastBannerTick || now > banner.until) { lastBannerTick = bt; need = true; } }
     if (!need) return;
     forceDraw = false; lastHc = hc; lastHk = hdr.key; lastFk = ftr.key;
 
@@ -1345,12 +1672,14 @@ _ 00000 00000 00000 00000 00000 00000 11111
       drawPage(pages[trans.to], trans.dir * W - dx, now, ts, dt);
       if (t >= 1) { cur = trans.to; trans = null; dwellAcc = 0; forceDraw = true; }
     } else drawPage(pages[cur], 0, now, ts, dt);
+    drawBanner(now);
     ctx.drawImage(hc, 0, 0);
     ctx.drawImage(fc, 0, L.uy + L.uh - L.ftrH);
     drawnFrames++;
     if (!firstDrawn) { firstDrawn = true; try { performance.mark('mc-first-frame'); } catch (e) { /* ignore */ } }
   }
   let firstDrawn = false, drawnFrames = 0;
+  const dynLast = {};
   let lastHc = null, lastHk = null, lastFk = null;
   function drawPage(id, offX, now, ts, dt) {
     const l = layerFor(id, now);
@@ -1361,6 +1690,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
       ctx.beginPath(); ctx.rect(L.cx, L.cy, L.cw, L.ch); ctx.clip();
       ctx.translate(L.cx + offX, L.cy);
       P.dyn(ctx, L.cw, L.ch, now, ts, dt);
+      dynLast[id] = ts;
       ctx.restore();
     }
   }
@@ -1369,6 +1699,12 @@ _ 00000 00000 00000 00000 00000 00000 11111
     if (trans) { cur = trans.to; trans = null; }
     const to = (cur + dir + pages.length) % pages.length;
     trans = { from: cur, to, dir: dir > 0 ? 1 : -1, t0: performance.now() };
+    dwellAcc = 0;
+  }
+  function goTo(idx) {
+    if (idx < 0 || idx >= pages.length) return;
+    if (trans) { cur = trans.to; trans = null; }
+    if (idx !== cur) trans = { from: cur, to: idx, dir: idx > cur ? 1 : -1, t0: performance.now() };
     dwellAcc = 0;
   }
   function start() { if (!raf) { lastTs = 0; forceDraw = true; raf = requestAnimationFrame(frame); } }
@@ -1414,6 +1750,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
       if (!isFullscreen() && document.documentElement.requestFullscreen) document.documentElement.requestFullscreen({ navigationUI: 'hide' }).catch(() => {});
       return;
     }
+    if (banner) { banner = null; forceDraw = true; return; }
     requestWake();
     if (!isFullscreen() && document.documentElement.requestFullscreen) {
       document.documentElement.requestFullscreen({ navigationUI: 'hide' }).catch(() => { paused = !paused; forceDraw = true; });
@@ -1475,10 +1812,47 @@ _ 00000 00000 00000 00000 00000 00000 11111
     requestWake(); checkNight(); start(); schedTick();
     forceDraw = true;
   }
-  function handleRemote(msg) {
-    if (msg === 'off' || msg === 'sleep') enterSleep();
-    else if (msg === 'on' || msg === 'wake') exitSleep();
-    else if (msg === 'toggle') { if (sleeping) exitSleep(); else enterSleep(); }
+  const PAGE_ALIASES = {
+    clock: 'clock', time: 'clock', bus: 'bus', buses: 'bus', world: 'map', map: 'map', iss: 'map', quakes: 'map',
+    fx: 'fx', rates: 'fx', forex: 'fx', weather: 'weather', wx: 'weather', news: 'news', headlines: 'news',
+    music: 'music', nowplaying: 'music', countdown: 'countdown', trip: 'countdown', credits: 'credits'
+  };
+  function showPage(name) {
+    const n = parseInt(name, 10);
+    const id = !isNaN(n) && String(n) === name ? pages[n - 1] : PAGE_ALIASES[name];
+    const idx = pages.indexOf(id);
+    if (idx < 0) return;
+    goTo(idx);
+    holdUntil = Date.now() + 60e3; // stay on the requested page for a minute
+  }
+  function setPalette(v) {
+    S.palette = v; LS.set('mc.settings', S); PAL = PALETTES[v];
+    layers.clear(); mapBase = null; newsCache.clear(); newsLayout = null; hdr.key = ftr.key = null;
+    if (banner) banner.key = '';
+    forceDraw = true;
+  }
+  /* Remote commands (ntfy message text):
+     off | on | toggle | msg <text> | clear | next | prev | pause | resume |
+     page <name or number> | <page name> | colour | vfd */
+  function handleRemote(raw) {
+    const msg = String(raw || '').trim(), low = msg.toLowerCase();
+    const word = low.split(/\s+/)[0], rest = msg.slice(word.length).trim();
+    if (low === 'off' || low === 'sleep') return enterSleep();
+    if (low === 'on' || low === 'wake') return exitSleep();
+    if (low === 'toggle') return sleeping ? exitSleep() : enterSleep();
+    if (word === 'msg' || word === 'say' || word === 'message') { if (rest) showBanner(rest); return; }
+    if (low === 'clear' || low === 'dismiss') { banner = null; forceDraw = true; return; }
+    const isCmd = ['next', 'prev', 'previous', 'back', 'pause', 'resume', 'play', 'colour', 'color', 'vfd', 'page', 'show', 'palette'].includes(word) || PAGE_ALIASES[low.replace(/\s+/g, '')];
+    if (!isCmd) return;
+    if (sleeping) exitSleep();
+    if (low === 'next') { holdUntil = 0; go(1); }
+    else if (low === 'prev' || low === 'previous' || low === 'back') { holdUntil = 0; go(-1); }
+    else if (low === 'pause') { paused = true; forceDraw = true; }
+    else if (low === 'resume' || low === 'play') { paused = false; holdUntil = 0; dwellAcc = 0; forceDraw = true; }
+    else if (word === 'page' || word === 'show') showPage(rest.toLowerCase().replace(/\s+/g, ''));
+    else if (/^(palette\s+)?colou?r$/.test(low)) setPalette('color');
+    else if (/^(palette\s+)?vfd$/.test(low)) setPalette('vfd');
+    else showPage(low.replace(/\s+/g, ''));
   }
   function remoteConnect(force) {
     if (navigator.onLine === false) { if (es) { es.close(); es = null; } esTopic = ''; remoteState = 'OFFLINE'; return; }
@@ -1496,10 +1870,20 @@ _ 00000 00000 00000 00000 00000 00000 11111
       let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
       if (!m || m.event !== 'message') return;
       if (m.time && Date.now() / 1000 - m.time > 120) return; // ignore anything old
-      handleRemote(String(m.message || '').trim().toLowerCase());
+      handleRemote(String(m.message || ''));
     };
   }
   setInterval(() => { if (!document.hidden) remoteConnect(false); }, 10e3);
+
+  /* =============================================================== battery */
+  let battery = null;
+  if (navigator.getBattery) {
+    navigator.getBattery().then((b) => {
+      battery = b;
+      const upd = () => { forceDraw = true; };
+      b.addEventListener('levelchange', upd); b.addEventListener('chargingchange', upd);
+    }).catch(() => { battery = null; });
+  }
 
   /* ========================================================== night dimming */
   function checkNight() {
@@ -1537,6 +1921,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
     f.palette.value = S.palette; f.dwell.value = S.dwell; f.nightDim.checked = !!S.nightDim;
     f.notchMargin.value = S.notchMargin;
     f.remoteOn.checked = !!S.remoteOn; f.remoteTopic.value = S.remoteTopic;
+    for (const pr of FX_PAIRS) f['fx_' + pr.id].value = S.fxAlerts[pr.id] || '';
     showRemoteUrls();
     document.getElementById('sInstall').hidden = !installEvt;
     for (const p of PAGE_DEFS) f['page_' + p.id].checked = !!S.pages[p.id];
@@ -1558,9 +1943,11 @@ _ 00000 00000 00000 00000 00000 00000 11111
       notchMargin: Math.max(0, Math.min(120, parseInt(f.notchMargin.value, 10) || 0)),
       remoteOn: f.remoteOn.checked,
       remoteTopic: (f.remoteTopic.value.trim().replace(/[^A-Za-z0-9_-]/g, '') || old.remoteTopic).slice(0, 64),
+      fxAlerts: {},
       pages: {}
     };
     for (const p of PAGE_DEFS) n.pages[p.id] = f['page_' + p.id].checked;
+    for (const pr of FX_PAIRS) { const v = f['fx_' + pr.id].value.trim(); n.fxAlerts[pr.id] = parseFxRule(v) ? v : ''; }
     S = n; LS.set('mc.settings', S);
     if (old.lfmUser !== n.lfmUser || old.lfmKey !== n.lfmKey) resetSource('music');
     if (old.rssUrl !== n.rssUrl || old.rssProxy !== n.rssProxy || old.rssDirect !== n.rssDirect) resetSource('news');
@@ -1584,6 +1971,40 @@ _ 00000 00000 00000 00000 00000 00000 11111
       await navigator.clipboard.writeText(txt); info.textContent = 'URLs copied to clipboard.';
     } catch (e) { if (e && e.name !== 'AbortError') info.textContent = 'Could not share - long-press the URLs to copy them.'; }
   });
+  /* ---------- settings backup link: #cfg=<base64url JSON>; the part after # never reaches a server ---------- */
+  const b64e = (str) => btoa(unescape(encodeURIComponent(str))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const b64d = (x) => { x = x.replace(/-/g, '+').replace(/_/g, '/'); while (x.length % 4) x += '='; return decodeURIComponent(escape(atob(x))); };
+  function backupLink() { return location.origin + location.pathname + '#cfg=' + b64e(JSON.stringify(S)); }
+  function sanitizeSettings(o) {
+    const out = {};
+    for (const k in DEFAULTS) {
+      if (!(k in o)) continue;
+      const dv = DEFAULTS[k], v = o[k];
+      if (dv && typeof dv === 'object') {
+        if (v && typeof v === 'object') { out[k] = {}; for (const kk in dv) if (kk in v && typeof v[kk] === typeof dv[kk]) out[k][kk] = v[kk]; }
+      } else if (typeof v === typeof dv) out[k] = v;
+    }
+    return out;
+  }
+  function checkRestoreLink() {
+    const hsh = location.hash;
+    if (!hsh.startsWith('#cfg=')) return;
+    let o = null;
+    try { o = JSON.parse(b64d(hsh.slice(5))); } catch (e) { o = null; }
+    history.replaceState(null, '', location.pathname + location.search);
+    if (!o || typeof o !== 'object') return;
+    if (!window.confirm('Restore Mission Control settings from this backup link? This replaces the settings on this phone.')) return;
+    LS.set('mc.settings', Object.assign({}, S, sanitizeSettings(o)));
+    location.reload();
+  }
+  async function shareText(title, txt, okMsg) {
+    const info = document.getElementById('sInfo');
+    try {
+      if (navigator.share) { await navigator.share({ title, text: txt }); return; }
+      await navigator.clipboard.writeText(txt); info.textContent = okMsg;
+    } catch (e) { if (e && e.name !== 'AbortError') info.textContent = 'Could not share - try again.'; }
+  }
+  document.getElementById('sBackup').addEventListener('click', () => shareText('Mission Control settings backup', backupLink(), 'Backup link copied. It contains your Last.fm key - keep it private.'));
   document.getElementById('sInstall').addEventListener('click', async () => {
     if (!installEvt) return;
     const ev = installEvt; installEvt = null;
@@ -1621,10 +2042,11 @@ _ 00000 00000 00000 00000 00000 00000 11111
   setInterval(checkNight, 30e3);
   requestWake();
   remoteConnect(true);
+  checkRestoreLink();
 
   if ('serviceWorker' in navigator && !isNative() && location.protocol !== 'file:') {
     window.addEventListener('load', () => { navigator.serviceWorker.register('sw.js').catch(() => { /* offline shell unavailable */ }); });
   }
   // test hook (harmless in production): lets the verifier jump to a page
-  window.__mc = { go: (id) => { const i = pages.indexOf(id); if (i >= 0) { cur = i; trans = null; dwellAcc = 0; paused = true; forceDraw = true; } }, state: ST, pages: () => pages.slice(), drawn: () => drawnFrames, sleeping: () => sleeping, remote: () => remoteState, mode: LAUNCH_MODE };
+  window.__mc = { go: (id) => { const i = pages.indexOf(id); if (i >= 0) { cur = i; trans = null; dwellAcc = 0; paused = true; forceDraw = true; } }, state: ST, pages: () => pages.slice(), drawn: () => drawnFrames, sleeping: () => sleeping, remote: () => remoteState, mode: LAUNCH_MODE, cmd: (m) => handleRemote(m), alerts: () => alertsNow(Date.now()), banner: () => !!banner, current: () => pages[trans ? trans.to : cur] };
 })();
