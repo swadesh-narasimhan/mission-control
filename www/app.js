@@ -5,7 +5,7 @@
  * when nothing moved. */
 'use strict';
 (function () {
-  const APP_VERSION = '1.3.0';
+  const APP_VERSION = '1.3.1';
   const SLIDE_MS = 520;
   const LONGPRESS_MS = 650;
 
@@ -172,7 +172,10 @@ _ 00000 00000 00000 00000 00000 00000 11111
     rain: '...oo.... ..oooo.o. .oooooooo ooooooooo .ooooooo. ......... .#..#..#. #..#..#.. .........',
     storm: '..ooo.... .ooooo.o. ooooooooo ooooooooo .ooooooo. .....##.. ....##... ...####.. ....#....',
     fog: '......... #######.. ......... ..####### ......... #######.. ......... ..####### .........',
-    snow: '...oo.... ..oooo.o. .oooooooo ooooooooo .ooooooo. ......... .#..#..#. ......... ..#..#..#'
+    snow: '...oo.... ..oooo.o. .oooooooo ooooooooo .ooooooo. ......... .#..#..#. ......... ..#..#..#',
+    drop: '...#... ...#... ..###.. .#####. .#####. .#####. ..###..',
+    sunup: '....#.... ...###... ..#####.. ......... ...###... .#######. ......... ooooooooo',
+    sundown: '..#####.. ...###... ....#.... ......... ...###... .#######. ......... ooooooooo'
   };
   const ICON_CELLS = {};
   for (const k in ICONS) {
@@ -397,7 +400,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
       on: () => S.pages.weather,
       url: () => 'https://api.open-meteo.com/v1/forecast?latitude=1.2897,12.9716&longitude=103.8501,77.5946' +
         '&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m,is_day' +
-        '&hourly=temperature_2m,precipitation_probability&forecast_hours=7' +
+        '&hourly=temperature_2m,precipitation_probability,weather_code,is_day&forecast_hours=7' +
         '&minutely_15=precipitation&forecast_minutely_15=8' +
         '&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset&forecast_days=1&timezone=auto',
       parse(j) {
@@ -418,7 +421,8 @@ _ 00000 00000 00000 00000 00000 00000 11111
           sunrise: o.daily && o.daily.sunrise ? String(o.daily.sunrise[0]).slice(11, 16) : '',
           sunset: o.daily && o.daily.sunset ? String(o.daily.sunset[0]).slice(11, 16) : '',
           hours: o.hourly && o.hourly.time ? o.hourly.time.slice(1, 7).map((t, k) => ({
-            h: String(t).slice(11, 13), temp: o.hourly.temperature_2m[k + 1], pp: o.hourly.precipitation_probability[k + 1]
+            h: String(t).slice(11, 13), temp: o.hourly.temperature_2m[k + 1], pp: o.hourly.precipitation_probability[k + 1],
+            code: o.hourly.weather_code ? o.hourly.weather_code[k + 1] : null, isDay: o.hourly.is_day ? o.hourly.is_day[k + 1] : 1
           })) : [],
           m15: o.minutely_15 && o.minutely_15.time ? { t: o.minutely_15.time, p: o.minutely_15.precipitation } : null
         }));
@@ -534,6 +538,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
   }
 
   { const rd = ST.rel.data; if (rd && rd.items && rd.items.length && !rd.items[0].id) ST.rel.next = 0; } // pre-1.3 cache: no artwork ids
+  { const wd = ST.wx.data; if (wd && wd[0] && wd[0].hours && wd[0].hours[0] && wd[0].hours[0].code === undefined) ST.wx.next = 0; } // pre-1.3.1: no hourly icons
 
   async function fetchWithTimeout(url, ms, asText) {
     const ac = typeof AbortController === 'function' ? new AbortController() : null;
@@ -1152,57 +1157,110 @@ _ 00000 00000 00000 00000 00000 00000 11111
     });
     return out;
   }
+  /* Weather, built to be read from across the room: big icon + temperature, the condition,
+     then icon "chips" (rain chance, high/low, sunrise/sunset, AQI) and the next 6 hours as icons. */
   function drawWeather(g, w, h, now) {
     const st = status('wx', now), d = ST.wx.data;
     const bottom = statusLine(g, w, h, 'OPEN-METEO.COM · CC BY 4.0', st);
     if (!d) { centerMsg(g, w, bottom, ST.wx.fails ? 'NO DATA' : 'LOADING', ST.wx.err); return; }
     const aq = ST.aq.data, soon = rainSoon(now);
     const blocks = splitBlocks(w, bottom, 2);
-    const dp = L.portrait ? L.s1 : Math.max(2, L.s1 - 1);
+    const portrait = L.portrait;
+    const pc = portrait ? L.s2 : L.s1 + 1;   // chip text pitch
     d.forEach((loc, i) => {
       const b = blocks[i];
       const x = b.x + L.pad, bw = b.w - L.pad * 2;
-      const maxC = Math.floor((bw + dp) / (6 * dp));
       const a = aq && aq[i];
-      const lines = [
-        ['FEELS ' + deg(loc.feels) + '  HUM ' + pct(loc.hum), PAL.main],
-        ['WIND ' + (loc.wind == null ? '--' : Math.round(loc.wind) + ' KM/H') + ' · HI ' + deg(loc.tmax) + ' LO ' + deg(loc.tmin), PAL.main],
-        ['RAIN ' + pct(loc.rainNow) + ' THIS HR · ' + pct(loc.rainDay) + ' TODAY', PAL.main],
-        a && a.aqi != null
-          ? ['AQI ' + a.aqi + ' ' + AQI_CAT(a.aqi) + ' · PM2.5 ' + Math.round(a.pm25), a.aqi > 150 ? PAL.bad : a.aqi > 100 ? PAL.warn : PAL.main]
-          : ['AQI ' + (ST.aq.fails && !aq ? 'NO DATA' : '--') + (aq && isStale('aq', now) ? ' (STALE)' : ''), PAL.dim]
+      // chips, in groups that stay together on one line
+      const C = (t, col, ic) => ({ t, col, ic });
+      const groups = [
+        [C(pct(loc.rainDay), (loc.rainDay || 0) >= 50 ? PAL.warn : PAL.main, 'drop')],
+        [C('▲' + deg(loc.tmax), PAL.main), C('▼' + deg(loc.tmin), PAL.main)]
       ];
-      if (loc.sunrise) lines.push(['SUNRISE ' + loc.sunrise + ' · SUNSET ' + loc.sunset, PAL.dim]);
+      if (loc.sunrise) groups.push([C(loc.sunrise, PAL.main, 'sunup')], [C(loc.sunset, PAL.main, 'sundown')]);
+      if (a && a.aqi != null) groups.push([C('AQI ' + a.aqi, a.aqi > 150 ? PAL.bad : a.aqi > 100 ? PAL.warn : PAL.main)]);
+      const icCols = (c) => (c.ic ? ICONS[c.ic].split(' ')[0].length : 0);
+      const chipW = (c) => (c.ic ? icCols(c) * pc + pc * 1.5 : 0) + tw(norm(c.t).length, pc);
+      const inGap = pc * 6, gapX = pc * 6 * 2;
+      const groupW = (gr) => gr.reduce((acc, c, k) => acc + chipW(c) + (k ? inGap : 0), 0);
+      const chipAreaW = portrait ? bw : Math.round(bw * 0.4);
+      const rows = [];
+      for (const gr of groups) {
+        const last = rows[rows.length - 1];
+        if (portrait && last && last.w + gapX + groupW(gr) <= chipAreaW) { last.items.push(...gr); last.w += gapX + groupW(gr); last.breaks.push(last.items.length - gr.length); }
+        else rows.push({ items: gr.slice(), w: groupW(gr), breaks: [0] });
+      }
+      const rowH = LH * pc + pc;
+      const drawRow = (row, rx, ry) => {
+        let cx = rx;
+        row.items.forEach((c, k) => {
+          if (k > 0) cx += row.breaks.includes(k) ? gapX : inGap;
+          if (c.ic) {
+            const ip = c.ic === 'drop' ? pc : Math.max(2, Math.round((pc * 7) / 8));
+            icon(g, c.ic, cx, ry + (th(pc) - (c.ic === 'drop' ? 7 : 8) * ip) / 2, ip, c.col, PAL.dim);
+            cx += icCols(c) * ip + pc * 1.5;
+          }
+          cx += text(g, c.t, cx, ry, pc, c.col);
+        });
+      };
+      // next 6 hours as icons
       const hours = (loc.hours || []).slice(0, 6);
-      const stripH = hours.length ? 3 * LH * dp + L.s2 * 2 : 0;
-      const fixedH = th(L.s2) + L.pad * 0.8 + L.s2 * 2 + th(L.s2) + L.s2 * 2 + lines.length * LH * dp + stripH;
-      const Pi = Math.max(2, Math.floor(Math.min(bw * 0.3, b.h - L.pad * 2 - fixedH) / 9));
-      let y = b.y + Math.max(L.pad, Math.round((b.h - fixedH - 9 * Pi) / 2));
-      text(g, loc.name, x, y, L.s2, PAL.accent);
-      if (loc.time) text(g, loc.time.slice(11, 16) + ' LOCAL', x + bw, y + th(L.s2) - th(L.s1), L.s1, PAL.dim, 'right');
-      y += th(L.s2) + L.pad * 0.8;
+      const hcw = bw / Math.max(1, hours.length);
+      const hp = Math.max(2, Math.min(L.s1 + 1, Math.floor((hcw * 0.6) / 9)));
+      const stripH = hours.length ? L.pad * 0.6 + th(L.s1) + L.s1 * 2 + 9 * hp : 0;
       const [cond, ic] = WMO(loc.code);
       const iconName = (ic === 'sun' && loc.isDay === 0) ? 'moon' : ic;
-      icon(g, iconName, x, y, Pi, PAL.main, PAL.dim);
-      const ts = deg(loc.temp) + 'C';
-      const Pt = fitP(ts.length, bw - 9 * Pi - L.pad, 9 * Pi * 0.8, L.s3 * 3);
-      text(g, ts, x + 9 * Pi + L.pad, y + (9 * Pi - th(Pt)) / 2, Pt, PAL.main, 'left', true);
-      y += 9 * Pi + L.s2 * 2;
-      text(g, cond, x, y, L.s2, PAL.main);
       const rs = soon.find((r) => r.loc === i);
-      if (rs) text(g, 'RAIN ' + rs.short, x + bw, y + th(L.s2) - th(L.s1), L.s1, PAL.warn, 'right');
-      y += th(L.s2) + L.s2 * 2;
-      for (const [ln, col] of lines) { text(g, clip(ln, maxC), x, y, dp, col); y += LH * dp; }
+      const feels = 'FEELS ' + deg(loc.feels), ts = deg(loc.temp);
+      const nameH = th(L.s2) + L.pad * 0.8;
+      // hero = weather icon + big temperature with feels-like underneath
+      const drawHero = (hx, hy, hw, hh) => {
+        const Pi = Math.max(3, Math.floor(Math.min(hw * 0.36, hh) / 9));
+        const tx = hx + 9 * Pi + L.pad * 1.5, tW = hw - 9 * Pi - L.pad * 1.5;
+        const fp = Math.max(L.s1, Math.min(L.s2, Math.floor((tW + L.s2) / (6 * feels.length))));
+        const Pt = fitP(ts.length, tW, hh - th(fp) - fp * 3, L.s3 * 4);
+        const heroH = th(Pt) + fp * 3 + th(fp);
+        icon(g, iconName, hx, hy + Math.max(0, (hh - 9 * Pi) / 2), Pi, PAL.main, PAL.dim);
+        const ty = hy + Math.max(0, (hh - heroH) / 2);
+        text(g, ts, tx, ty, Pt, PAL.main, 'left', true);
+        text(g, feels, tx, ty + th(Pt) + fp * 3, fp, PAL.dim);
+      };
+      let y;
+      if (portrait) {
+        const condP = Math.max(L.s1, Math.min(L.s3, Math.floor((bw + L.s3) / (6 * Math.max(1, cond.length)))));
+        const fixedH = nameH + L.pad * 0.6 + th(condP) + L.pad * 0.8 + rows.length * rowH + stripH;
+        const heroH = Math.max(L.s2 * 9, Math.min(bw * 0.42, b.h - L.pad * 2 - fixedH));
+        y = b.y + Math.max(L.pad, Math.round((b.h - fixedH - heroH) / 2));
+        text(g, loc.name, x, y, L.s2, PAL.accent);
+        if (rs) text(g, 'RAIN ' + rs.short, x + bw, y, L.s2, PAL.warn, 'right');
+        y += nameH;
+        drawHero(x, y, bw, heroH); y += heroH + L.pad * 0.6;
+        text(g, cond, x, y, condP, PAL.main); y += th(condP) + L.pad * 0.8;
+        for (const row of rows) { drawRow(row, x, y); y += rowH; }
+      } else {
+        // landscape: condition shares the name line; chips stack in a column beside the hero
+        const chipsH = rows.length * rowH;
+        const heroH = Math.max(chipsH, Math.min(bw * 0.3, b.h - L.pad * 2 - nameH - stripH));
+        y = b.y + Math.max(L.pad, Math.round((b.h - nameH - heroH - stripH) / 2));
+        text(g, loc.name, x, y, L.s2, PAL.accent);
+        const nameW = tw(loc.name.length, L.s2) + L.s2 * 6;
+        fitText(g, rs ? cond + ' · RAIN ' + rs.short : cond, x + bw, y, bw - nameW, L.s2, rs ? PAL.warn : PAL.main, 'right');
+        y += nameH;
+        drawHero(x, y, bw - chipAreaW - L.pad, heroH);
+        let cy = y + Math.max(0, (heroH - chipsH) / 2);
+        for (const row of rows) { drawRow(row, x + bw - chipAreaW, cy); cy += rowH; }
+        y += heroH;
+      }
       if (hours.length) {
-        y += L.s2;
-        dotLine(g, x, y - L.s2 / 2, bw, Math.max(1, dp - 1), PAL.dim);
-        y += L.s2 / 2;
-        const cw = bw / hours.length;
+        y += L.pad * 0.6;
+        dotLine(g, x, y - L.s1, bw, Math.max(1, L.s1 - 1), PAL.dim);
+        y += L.s1;
         hours.forEach((hr, k) => {
-          const cx = x + cw * k + cw / 2;
-          text(g, hr.h, cx, y, dp, PAL.dim, 'center');
-          text(g, deg(hr.temp), cx, y + LH * dp, dp, PAL.main, 'center');
-          text(g, pct(hr.pp), cx, y + 2 * LH * dp, dp, hr.pp >= 50 ? PAL.warn : PAL.dim, 'center');
+          const cx = x + hcw * k + hcw / 2;
+          text(g, hr.h, cx, y, L.s1, PAL.dim, 'center');
+          const [, hic] = WMO(hr.code == null ? loc.code : hr.code);
+          const hn = (hic === 'sun' && hr.isDay === 0) ? 'moon' : hic;
+          icon(g, hn, Math.round(cx - 4.5 * hp), y + th(L.s1) + L.s1 * 2, hp, PAL.main, PAL.dim);
         });
       }
     });
