@@ -26,7 +26,6 @@ html, body {
   background: #000;
   transition: opacity 2s linear;
 }
-body.night #screen { opacity: 0.3; }
 /* remote sleep: pure black; a faint note fades out in case the screen stays lit */
 body.sleep #screen { opacity: 0; transition: none; }
 body.sleep::after {

@@ -5,7 +5,7 @@
  * when nothing moved. */
 'use strict';
 (function () {
-  const APP_VERSION = '1.2.0';
+  const APP_VERSION = '1.2.1';
   const SLIDE_MS = 520;
   const LONGPRESS_MS = 650;
 
@@ -38,7 +38,7 @@
     relArtists: 'Anirudh Ravichander, Sai Abhyankkar',
     rssUrl: 'https://www.business-standard.com/rss/markets-106.rss', rssProxy: '', rssDirect: false,
     cdName: 'TRAIN TRIP', cdDate: '',
-    palette: 'vfd', dwell: 6, nightDim: true, notchMargin: 28,
+    palette: 'vfd', dwell: 6, notchMargin: 28,
     remoteOn: true, remoteTopic: '',
     fxAlerts: { usdinr: '', sgdinr: '' },
     pages: { clock: true, bus: true, map: true, fx: true, weather: true, news: true, releases: true, otd: true, countdown: true, credits: true }
@@ -1899,7 +1899,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
     if (!sleeping) return;
     sleeping = false;
     document.body.classList.remove('sleep');
-    requestWake(); checkNight(); start(); schedTick();
+    requestWake(); start(); schedTick();
     forceDraw = true;
   }
   const PAGE_ALIASES = {
@@ -1976,11 +1976,6 @@ _ 00000 00000 00000 00000 00000 00000 11111
     }).catch(() => { battery = null; });
   }
 
-  /* ========================================================== night dimming */
-  function checkNight() {
-    const h = new Date().getHours();
-    document.body.classList.toggle('night', !!S.nightDim && (h >= 23 || h < 7));
-  }
 
   /* ====================================================== install / mode */
   // How this page was launched, read before any requestFullscreen():
@@ -2009,7 +2004,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
     f.relArtists.value = S.relArtists;
     f.rssUrl.value = S.rssUrl; f.rssProxy.value = S.rssProxy; f.rssDirect.checked = !!S.rssDirect;
     f.cdName.value = S.cdName; f.cdDate.value = S.cdDate; f.cdDate.min = '2026-01-01T00:00';
-    f.palette.value = S.palette; f.dwell.value = S.dwell; f.nightDim.checked = !!S.nightDim;
+    f.palette.value = S.palette; f.dwell.value = S.dwell;
     f.notchMargin.value = S.notchMargin;
     f.remoteOn.checked = !!S.remoteOn; f.remoteTopic.value = S.remoteTopic;
     for (const pr of FX_PAIRS) f['fx_' + pr.id].value = S.fxAlerts[pr.id] || '';
@@ -2030,7 +2025,6 @@ _ 00000 00000 00000 00000 00000 00000 11111
       cdName: f.cdName.value.trim() || 'COUNTDOWN', cdDate: f.cdDate.value,
       palette: f.palette.value === 'color' ? 'color' : 'vfd',
       dwell: Math.max(3, Math.min(120, parseInt(f.dwell.value, 10) || 6)),
-      nightDim: f.nightDim.checked,
       notchMargin: Math.max(0, Math.min(120, parseInt(f.notchMargin.value, 10) || 0)),
       remoteOn: f.remoteOn.checked,
       remoteTopic: (f.remoteTopic.value.trim().replace(/[^A-Za-z0-9_-]/g, '') || old.remoteTopic).slice(0, 64),
@@ -2044,7 +2038,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
     if (old.rssUrl !== n.rssUrl || old.rssProxy !== n.rssProxy || old.rssDirect !== n.rssDirect) resetSource('news');
     PAL = PALETTES[S.palette];
     layers.clear(); mapBase = null; mmImg = null; newsCache.clear(); newsLayout = null; hdr.key = ftr.key = null;
-    resize(); rebuildPages(); checkNight(); closeSettings(); schedTick(); remoteConnect(true);
+    resize(); rebuildPages(); closeSettings(); schedTick(); remoteConnect(true);
   });
   function showRemoteUrls() {
     const t = (sf.elements.remoteTopic.value.trim().replace(/[^A-Za-z0-9_-]/g, '')) || S.remoteTopic;
@@ -2117,7 +2111,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) { stop(); return; }
     if (sleeping) { exitSleep(); remoteConnect(false); return; } // screen was woken (double-tap / power key)
-    requestWake(); checkNight(); schedTick(); start(); remoteConnect(false);
+    requestWake(); schedTick(); start(); remoteConnect(false);
   });
   let rsT = 0;
   window.addEventListener('resize', relayoutSoon);
@@ -2126,11 +2120,9 @@ _ 00000 00000 00000 00000 00000 00000 11111
 
   resize();
   rebuildPages();
-  checkNight();
   start();
   schedTick();
   setInterval(schedTick, 1000);
-  setInterval(checkNight, 30e3);
   requestWake();
   remoteConnect(true);
   checkRestoreLink();

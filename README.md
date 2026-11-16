@@ -69,7 +69,7 @@ Then open http://localhost:8090. Any static server works; the service worker nee
 Tips for 24/7 use:
 - Keep it on the charger. As a fallback to the wake lock, turn on **Developer options → Stay awake** (screen never sleeps while charging).
 - **Settings → Apps → Chrome → Battery → Unrestricted**, so One UI doesn't freeze it.
-- Between 23:00 and 07:00 the display dims to about 30% (CSS opacity on a pure-black page). You can turn this off in Settings.
+- Brightness is left to Android's auto-brightness; the app doesn't dim itself.
 
 ### Address bar shows after the screen wakes?
 
@@ -119,7 +119,7 @@ Long-press → Settings → **BACKUP LINK** shares a link with all settings, inc
 | Countdown | Event name (default `TRAIN TRIP`) and date/time. Until a date is set the page shows `DATE NOT SET`. |
 | Palette | `VFD TEAL` (mono) or `FULL COLOUR` (amber labels, red quakes, green/red FX moves, bus crowding green/amber/red). |
 | FX alerts | Per pair: `>=95`, `<=93.5`, `>`, `<`; a bare number means `>=`. |
-| Seconds per page, night dimming, enabled pages | Disabled pages also stop fetching. |
+| Seconds per page, enabled pages | Disabled pages also stop fetching. |
 
 ### The Business Standard feed and CORS
 

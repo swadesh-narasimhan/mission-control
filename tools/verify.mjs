@@ -62,7 +62,7 @@ async function waitForData(page, keys, ms = 20000) {
 // ---------- 1. screenshots of every page, both orientations (default settings) ----------
 for (const vp of VIEWPORTS) {
   const ctx = await browser.newContext({ viewport: vp.viewport, deviceScaleFactor: 2, isMobile: true, hasTouch: true, timezoneId: 'Asia/Singapore', locale: 'en-GB' });
-  await ctx.addInitScript(() => { if (!localStorage.getItem('mc.settings')) localStorage.setItem('mc.settings', JSON.stringify({ nightDim: false })); });
+  await ctx.addInitScript(() => { if (!localStorage.getItem('mc.settings')) localStorage.setItem('mc.settings', JSON.stringify({})); });
   const page = await ctx.newPage();
   watch(page, vp.name);
   await page.goto(ORIGIN + '/');
@@ -125,7 +125,7 @@ for (const vp of VIEWPORTS) {
   await ctx.close();
 }
 
-// ---------- 3. night dimming (fixed clock at 23:30 SGT) ----------
+// ---------- 3. no dimming at night (dimming was removed in v1.2.1; brightness is left to Android) ----------
 {
   const ctx = await browser.newContext({ viewport: { width: 360, height: 800 }, deviceScaleFactor: 2, timezoneId: 'Asia/Singapore' });
   const page = await ctx.newPage();
@@ -133,9 +133,7 @@ for (const vp of VIEWPORTS) {
   await page.clock.setFixedTime(new Date('2026-11-16T23:30:00+08:00'));
   await page.goto(ORIGIN + '/');
   await page.waitForTimeout(2500);
-  report.interactions.nightClass = await page.evaluate(() => document.body.classList.contains('night'));
-  report.interactions.nightOpacity = await page.evaluate(() => getComputedStyle(document.getElementById('screen')).opacity);
-  await page.screenshot({ path: join(SHOTS, 'night-dim.png') });
+  report.interactions.opacityAt2330 = await page.evaluate(() => getComputedStyle(document.getElementById('screen')).opacity);
   await ctx.close();
 }
 
