@@ -27,7 +27,7 @@ const server = http.createServer(async (req, res) => {
     try {
       const r = await fetch(u.searchParams.get('url'), { headers: { 'user-agent': 'Mozilla/5.0 mission-control-verify' } });
       const body = await r.text();
-      res.writeHead(r.status, { 'content-type': 'application/rss+xml; charset=utf-8', 'access-control-allow-origin': '*' });
+      res.writeHead(r.status, { 'content-type': r.headers.get('content-type') || 'application/octet-stream', 'access-control-allow-origin': '*' });
       res.end(body);
     } catch (e) { res.writeHead(502); res.end(String(e)); }
     return;
@@ -43,7 +43,7 @@ await new Promise((r) => server.listen(8099, '127.0.0.1', r));
 const ORIGIN = 'http://localhost:8099';
 const report = { console: [], apis: [], pages: [], installability: null, offline: null, perf: null, interactions: {} };
 
-const PAGES = ['clock', 'bus', 'map', 'fx', 'weather', 'news', 'releases', 'otd', 'countdown', 'credits'];
+const PAGES = ['clock', 'bus', 'sky', 'fx', 'weather', 'news', 'releases', 'kural', 'countdown', 'credits'];
 const VIEWPORTS = [
   { name: 'portrait', viewport: { width: 360, height: 800 } },
   { name: 'landscape', viewport: { width: 800, height: 360 } }
@@ -66,11 +66,11 @@ for (const vp of VIEWPORTS) {
   const page = await ctx.newPage();
   watch(page, vp.name);
   await page.goto(ORIGIN + '/');
-  await waitForData(page, ['iss', 'quakes', 'fx', 'wx', 'aq', 'bus', 'otd']);
+  await waitForData(page, ['quakes', 'fx', 'wx', 'aq', 'bus', 'kural']);
   await page.waitForTimeout(1500);
   for (const id of PAGES) {
     await page.evaluate((i) => window.__mc.go(i), id);
-    await page.waitForTimeout(id === 'news' || id === 'map' ? 900 : 500);
+    await page.waitForTimeout(id === 'news' || id === 'sky' ? 900 : 500);
     const file = `${vp.name}-${PAGES.indexOf(id) + 1}-${id}.png`;
     await page.screenshot({ path: join(SHOTS, file) });
     report.pages.push(file);
@@ -97,9 +97,9 @@ for (const vp of VIEWPORTS) {
   const page = await ctx.newPage();
   watch(page, 'configured');
   await page.goto(ORIGIN + '/');
-  await waitForData(page, ['iss', 'quakes', 'fx', 'wx', 'news', 'rel', 'otd']);
+  await waitForData(page, ['quakes', 'fx', 'wx', 'news', 'rel', 'kural', 'sky'], 45000);
   await page.waitForTimeout(1200);
-  for (const id of ['news', 'releases', 'otd', 'bus', 'countdown', 'map', 'fx', 'weather', 'clock']) {
+  for (const id of ['news', 'releases', 'kural', 'bus', 'countdown', 'sky', 'fx', 'weather', 'clock']) {
     await page.evaluate((i) => window.__mc.go(i), id);
     await page.waitForTimeout(id === 'news' ? 2500 : 600);
     const file = `configured-colour-${id}.png`;
@@ -218,13 +218,13 @@ for (const vp of VIEWPORTS) {
   await ctx.addInitScript((proxy) => localStorage.setItem('mc.settings', JSON.stringify({ rssProxy: proxy })), ORIGIN + '/proxy?url={url}');
   const page = await ctx.newPage();
   await page.goto(ORIGIN + '/');
-  await waitForData(page, ['iss', 'quakes', 'fx', 'wx', 'news']);
+  await waitForData(page, ['quakes', 'fx', 'wx', 'news']);
   const cdp = await ctx.newCDPSession(page);
   await cdp.send('Performance.enable');
   await cdp.send('Emulation.setCPUThrottlingRate', { rate: 4 });
   const metric = async () => Object.fromEntries((await cdp.send('Performance.getMetrics')).metrics.map((m) => [m.name, m.value]));
   report.render = {};
-  for (const id of ['clock', 'bus', 'map', 'news', 'fx']) {
+  for (const id of ['clock', 'bus', 'sky', 'news', 'fx', 'kural']) {
     await page.evaluate((i) => window.__mc.go(i), id);
     await page.waitForTimeout(800);
     const f0 = await page.evaluate(() => window.__mc.drawn()); const m0 = await metric();

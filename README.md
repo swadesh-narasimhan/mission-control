@@ -8,12 +8,12 @@ Pages rotate every 6 s (headlines get 12 s, the bus page 9 s) with a horizontal 
 |---|------|--------|---------|
 | 1 | Clock: Singapore + India, time and date | device clock (`Intl`) | 1 s |
 | 2 | Bus minimap: dot-matrix map of Pasir Panjang Rd and the surrounding roads with the routes of 10/30/51/143/183/188/200 traced, approaching buses as pulsing dots (buses off the map as edge arrows), next/then arrivals for stops 16081 Aft Palm Green Condo + 16089 Aft Clementi Rd, crowding colour | arrivelah (busrouter.sg, LTA data); map © OpenStreetMap | 30 s |
-| 3 | World map, full screen: ISS + 10-min trail, M4.5+ quakes (24 h), SIN/BLR, day/night. Landscape: flat map. Portrait: dot-matrix globe centred on the ISS | wheretheiss.at, USGS | 10 s / 5 min |
+| 3 | SKY: dot-matrix map of India to Southeast Asia (day/night shaded), the SIN-BLR great-circle route, live SIN⇄BLR flights with heading (flight number on the map; portrait adds a board with altitude or last-seen time), M4.5+ quakes inside the map (24 h). Flights out of receiver range (most of the Bay of Bengal) keep their last real fix, dimmed, with its time | adsb.lol (via your CORS proxy), adsbdb routes, USGS; coastline Natural Earth | 60 s / 5 min |
 | 4 | FX: USD/INR and SGD/INR, ~6-week sparkline, ECB rate date, optional alert thresholds | Frankfurter (ECB) | 1 h |
 | 5 | Weather, built to read from a distance: big icon + temperature with feels-like, the condition, then icons for rain chance, high/low, sunrise/sunset, plus colour-coded AQI, and the next 6 hours as weather icons; `RAIN ~25M` when rain is close | Open-Meteo forecast + air quality (CC BY 4.0) | 15 / 30 min |
 | 6 | Headlines (scrolling) | your RSS feed | 10 min |
 | 7 | New releases: latest singles / EPs / albums by your artists (default Anirudh Ravichander, Sai Abhyankkar) with dot-matrix cover art, `NEW` for the past week. **Tap a release** for the preview deck: Apple's 30-second preview through the phone speaker, a scrolling title, an elapsed counter, progress dots and a live 16-band spectrum analyser with peak hold. Tap again (or let it end) to return | Apple Music / iTunes catalogue (India store) | 6 h |
-| 8 | On this day: one Wikipedia event, changing every 10 min | Wikipedia (CC BY-SA 4.0) | 6 h + at midnight |
+| 8 | Kural of the day: a Thirukkural couplet in Tamil (drawn as dot-matrix from the phone's Tamil font) with its English meaning and chapter; a new one each day, cycling through all 1,330 | `www/kural/` (baked in, offline) | daily |
 | 9 | Countdown | settings | 1 s |
 | 10 | Credits / attribution | — | — |
 
@@ -98,7 +98,7 @@ Anyone who knows the topic can sleep your screen, so don't share it. If you need
 |---|---|
 | `msg Dinner in 10` | Big banner over the ticker for 2 minutes (tap to close). Also wakes a blanked display. |
 | `clear` | Removes the banner. |
-| `bus`, `weather`, `fx`, `clock`, `world`, `news`, `releases`, `otd`, `countdown` (or `page 3`) | Jumps to that page and holds it for 1 minute. |
+| `bus`, `sky` (or `flights`), `weather`, `fx`, `clock`, `news`, `releases`, `kural`, `countdown` (or `page 3`) | Jumps to that page and holds it for 1 minute. |
 | `next` / `prev` / `pause` / `resume` | Page control (`resume` restarts rotation). |
 | `play` / `play 2` / `stop` | Opens New Releases and previews the newest (or 2nd…) release / stops it. Chrome only allows sound after you've tapped the ticker at least once since it was opened (the fullscreen tap counts); otherwise the deck shows `TAP TO PLAY`. |
 | `colour` / `vfd` | Switch palette. |
@@ -127,38 +127,25 @@ Long-press → Settings → **BACKUP LINK** shares a link with all settings, inc
 The feed URL works: it returns HTTP 200 and valid RSS. But it sends **no `Access-Control-Allow-Origin` header**, so Chrome blocks a web page from reading it (confirmed from a browser context: `TypeError: Failed to fetch`). Until you set a proxy, the Headlines page shows **NO FEED**. You have two options:
 
 - **Use the Android app build (Phase 2).** It fetches natively, so CORS doesn't apply and no proxy is needed.
-- **Run your own small proxy.** A free Cloudflare Worker works. Restrict it to the feed so it isn't an open proxy:
+- **Run your own small proxy.** A free Cloudflare Worker works: paste [`proxy/worker.js`](proxy/worker.js) into a Worker (Cloudflare dashboard → Workers & Pages → your worker → Edit code → Deploy). It only fetches allow-listed URLs, so it isn't an open proxy:
+  - `https://www.business-standard.com/rss/` (headlines, cached 5 min)
+  - `https://api.adsb.lol/v2/` (live aircraft for the SKY page, cached 20 s)
 
-```js
-// Cloudflare Worker → set the app's CORS proxy to:  https://<name>.<you>.workers.dev/?url={url}
-export default {
-  async fetch(req) {
-    const u = new URL(req.url).searchParams.get('url');
-    const ALLOW = ['https://www.business-standard.com/rss/'];
-    if (!u || !ALLOW.some((p) => u.startsWith(p))) return new Response('forbidden', { status: 403 });
-    const r = await fetch(u, { headers: { 'user-agent': 'Mozilla/5.0 (personal RSS ticker)' }, cf: { cacheTtl: 300 } });
-    return new Response(r.body, {
-      status: r.status,
-      headers: { 'content-type': r.headers.get('content-type') || 'application/rss+xml',
-                 'access-control-allow-origin': '*', 'cache-control': 'max-age=300' }
-    });
-  }
-};
-```
-(The proxy path in the app was tested with a local proxy. This Worker itself was not deployed or tested, and Business Standard may treat cloud IPs differently.)
+  Then set Settings → CORS PROXY to `https://<name>.<you>.workers.dev/?url={url}`. The same proxy serves both pages.
 
 ## API check (from a browser context, 16 Nov 2026)
 
 | API | Browser fetch | Notes |
 |---|---|---|
-| wheretheiss.at `/v1/satellites/25544` | ✅ CORS `*` | |
+| adsb.lol `/v2/point`, `/v2/callsign` | ❌ no CORS | Needs the proxy. Tested 22 Nov: ~50 aircraft within 250 nm of SIN and of BLR, **0** over the middle of the Bay of Bengal (no receivers). |
+| adsbdb `/v0/callsign` | ✅ CORS `*` | Callsign → route (e.g. SIA502 = SIN→BLR, IGO1005 = BLR→SIN). Lookups are cached for 3 days. |
 | USGS `4.5_day.geojson` | ✅ CORS `*` | |
 | Frankfurter `api.frankfurter.dev/v1` | ✅ CORS `*` | The old `api.frankfurter.app` now 301-redirects here. |
 | Open-Meteo forecast | ✅ CORS `*` | Multi-location request returns an array. |
 | Business Standard RSS | ❌ **CORS-blocked** | Feed itself is fine; needs a proxy or the Android build. |
 | iTunes Search / Lookup (`itunes.apple.com`) | ✅ CORS `*` | Used for New Releases. Apple's chart RSS (`rss.marketingtools.apple.com`) has no CORS header and returned intermittent 502s, so charts aren't used. |
 | arrivelah (`arrivelah2.busrouter.sg`) | ✅ CORS `*` | Unofficial, community-run. The official LTA DataMall needs a key and a proxy. |
-| Open-Meteo air quality, Wikipedia feed | ✅ CORS `*` | |
+| Open-Meteo air quality | ✅ CORS `*` | |
 
 ## Verification
 
@@ -171,7 +158,12 @@ This serves `www/`, then drives headless Chromium at 360×800 CSS px @2× (= 720
 - Installability (`Page.getInstallabilityErrors`): **none**. Manifest parsed without errors, and the service worker controls the page.
 - Offline: the app shell loads from the service-worker cache and shows cached data.
 - Load with 4× CPU throttle and ~1.6 Mbps / 150 ms network: first frame at **~0.96 s** (v1.2; the bus map data loads afterwards in the background).
-- Render cost (4× CPU throttle): clock 1 frame/s at 3% main thread. Bus minimap 15 fps at ~5%. World map and headlines a steady 30 fps at 9–12%. Static pages (FX, weather) draw 0 fps until data changes. JS heap is about 3 MB.
+- Render cost (4× CPU throttle): clock 1 frame/s at 3% main thread. Bus minimap 15 fps at ~5%. SKY map 15 fps at ~6%; headlines a steady 30 fps at ~10%; Kural static. Static pages (FX, weather) draw 0 fps until data changes. JS heap is about 3 MB.
+
+## Baked data
+
+- `www/region.js` (63 KB): Natural Earth 1:50m land (public domain) for the SKY map. Rebuild: `node tools/build-region.mjs`.
+- `www/kural/k01.json` … `k14.json` (~31 KB each, one loaded per day): Thirukkural Tamil text with English meanings and chapter names, from github.com/tk120404/thirukkural (Apache-2.0; notice in `www/kural/NOTICE.txt`). Rebuild: `node tools/build-kural.mjs`.
 
 ## Bus minimap data
 

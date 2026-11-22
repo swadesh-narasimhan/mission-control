@@ -1,0 +1,2 @@
+Thirukkural text and English translations from github.com/tk120404/thirukkural (Apache License 2.0).
+The Thirukkural (Thiruvalluvar) is in the public domain.

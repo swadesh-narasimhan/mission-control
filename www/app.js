@@ -5,7 +5,7 @@
  * when nothing moved. */
 'use strict';
 (function () {
-  const APP_VERSION = '1.3.1';
+  const APP_VERSION = '1.4.0';
   const SLIDE_MS = 520;
   const LONGPRESS_MS = 650;
 
@@ -25,12 +25,12 @@
   const PAGE_DEFS = [
     { id: 'clock', title: 'CLOCK' },
     { id: 'bus', title: 'BUS' },
-    { id: 'map', title: 'WORLD' },
+    { id: 'sky', title: 'SKY' },
     { id: 'fx', title: 'FX RATES' },
     { id: 'weather', title: 'WEATHER' },
     { id: 'news', title: 'HEADLINES' },
     { id: 'releases', title: 'NEW RELEASES' },
-    { id: 'otd', title: 'ON THIS DAY' },
+    { id: 'kural', title: 'KURAL' },
     { id: 'countdown', title: 'COUNTDOWN' },
     { id: 'credits', title: 'CREDITS' }
   ];
@@ -41,7 +41,7 @@
     palette: 'vfd', dwell: 6, notchMargin: 28,
     remoteOn: true, remoteTopic: '',
     fxAlerts: { usdinr: '', sgdinr: '' },
-    pages: { clock: true, bus: true, map: true, fx: true, weather: true, news: true, releases: true, otd: true, countdown: true, credits: true }
+    pages: { clock: true, bus: true, sky: true, fx: true, weather: true, news: true, releases: true, kural: true, countdown: true, credits: true }
   };
   function loadSettings() {
     const s = Object.assign({}, DEFAULTS, LS.get('mc.settings', {}));
@@ -58,6 +58,13 @@
   }
   let S = loadSettings();
   const feedReady = () => !!S.rssUrl && (isNative() || !!S.rssProxy || S.rssDirect);
+  const skyReady = () => isNative() || !!S.rssProxy;
+  /* Your CORS proxy (Settings): {url} is replaced by the encoded target URL, otherwise it is appended. */
+  function proxied(u) {
+    if (isNative() || !S.rssProxy) return u;
+    const pr = S.rssProxy.trim();
+    return pr.indexOf('{url}') >= 0 ? pr.replace('{url}', encodeURIComponent(u)) : pr + encodeURIComponent(u);
+  }
 
   /* ================================================================ palette */
   const PALETTES = {
@@ -347,6 +354,8 @@ _ 00000 00000 00000 00000 00000 00000 11111
   /* ============================================================ data layer */
   const CK = 'mc.cache.v1.';
   const KNOWN_ARTISTS = { 'anirudh ravichander': 480976476, 'sai abhyankkar': 1652280551 };
+  /* One kural per local day, cycling through all 1330. */
+  const kuralNo = () => { const d = new Date(); return (Math.floor(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 864e5) % 1330) + 1; };
   const todayKey = () => { const d = new Date(); return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); };
   const BUS_STOPS = [
     { code: '16081', name: 'PALM GREEN', lat: 1.29196, lng: 103.76866 },
@@ -354,21 +363,15 @@ _ 00000 00000 00000 00000 00000 00000 11111
   ];
   const fmtDate = (d) => d.toISOString().slice(0, 10);
   const SRC = {
-    iss: {
-      every: 10e3, retry: 10e3, timeout: 8e3,
-      on: () => S.pages.map,
-      url: () => 'https://api.wheretheiss.at/v1/satellites/25544',
-      parse(j, prev) {
-        if (typeof j.latitude !== 'number') throw new Error('BAD DATA');
-        const t = j.timestamp * 1000;
-        const trail = ((prev && prev.trail) || []).filter((p) => p.t > t - 10 * 60e3 && p.t < t);
-        trail.push({ t, lat: j.latitude, lon: j.longitude });
-        return { lat: j.latitude, lon: j.longitude, alt: j.altitude, vel: j.velocity, vis: j.visibility, t, trail };
-      }
+    sky: {
+      every: 60e3, retry: 30e3, timeout: 15e3,
+      on: () => S.pages.sky && skyReady(),
+      fetch: () => skyFetch(),
+      parse: (x) => x
     },
     quakes: {
       every: 300e3, retry: 30e3, timeout: 15e3,
-      on: () => S.pages.map,
+      on: () => S.pages.sky,
       url: () => 'https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_day.geojson',
       parse(j) {
         if (!j || !Array.isArray(j.features)) throw new Error('BAD DATA');
@@ -454,13 +457,14 @@ _ 00000 00000 00000 00000 00000 00000 11111
         });
       }
     },
-    otd: {
+    kural: {
       every: 6 * 3600e3, retry: 60e3, timeout: 15e3,
-      on: () => S.pages.otd,
-      url: () => { const d = new Date(); return 'https://api.wikimedia.org/feed/v1/wikipedia/en/onthisday/selected/' + pad2(d.getMonth() + 1) + '/' + pad2(d.getDate()); },
-      parse(j) {
-        if (!j || !Array.isArray(j.selected)) throw new Error('BAD DATA');
-        return { date: todayKey(), items: j.selected.filter((x) => x && x.text).slice(0, 30).map((x) => ({ year: x.year, text: x.text })) };
+      on: () => S.pages.kural,
+      url: () => 'kural/k' + pad2(Math.floor((kuralNo() - 1) / 100) + 1) + '.json',
+      parse(rows) {
+        const n = kuralNo(), r = Array.isArray(rows) && rows.find((x) => x[0] === n);
+        if (!r) throw new Error('KURAL NOT FOUND');
+        return { date: todayKey(), n, ta: [r[1], r[2]], en: r[3], ch: r[4] };
       }
     },
     news: {
@@ -468,9 +472,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
       on: () => S.pages.news && feedReady(),
       url() {
         const u = S.rssUrl.trim();
-        if (isNative() || S.rssDirect || !S.rssProxy) return u;
-        const p = S.rssProxy.trim();
-        return p.indexOf('{url}') >= 0 ? p.replace('{url}', encodeURIComponent(u)) : p + encodeURIComponent(u);
+        return S.rssDirect ? u : proxied(u);
       },
       parse(txt) {
         const doc = new DOMParser().parseFromString(txt, 'text/xml');
@@ -588,7 +590,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
     if (document.hidden || sleeping) return;
     const now = Date.now();
     const offline = navigator.onLine === false;
-    const od = ST.otd;
+    const od = ST.kural;
     if (od.data && od.data.date !== todayKey() && !od.fails && !od.busy) od.next = Math.min(od.next, now);
     for (const k in SRC) {
       const st = ST[k];
@@ -665,7 +667,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
     L.hdrH = L.s1 * 7 + L.pad * 2;
     L.ftrH = L.s1 * 7 + L.pad * 2;
     L.cx = L.ux; L.cy = L.uy + L.hdrH; L.cw = L.uw; L.ch = L.uh - L.hdrH - L.ftrH;
-    layers.clear(); mapBase = null; mmImg = null; newsCache.clear(); hdr.key = ftr.key = null;
+    layers.clear(); skyBase = null; mmImg = null; newsCache.clear(); hdr.key = ftr.key = null;
     forceDraw = true;
   }
 
@@ -739,153 +741,176 @@ _ 00000 00000 00000 00000 00000 00000 11111
     blockDividers(g, w, h, 2);
   }
 
-  /* ---------- On this day (Wikipedia) ---------- */
-  function drawOtd(g, w, h, now) {
-    const st = status('otd', now), od = ST.otd.data;
-    const bottom = statusLine(g, w, h, 'WIKIPEDIA · CC BY-SA 4.0', st);
-    const head = new Date(now).toLocaleDateString('en-GB', { day: 'numeric', month: 'long' });
-    if (!od || od.date !== todayKey() || !od.items.length) {
-      text(g, head, w / 2, L.pad * 2, L.s2, PAL.accent, 'center');
-      centerMsg(g, w, bottom, ST.otd.fails ? 'NO DATA' : 'LOADING', ST.otd.err);
-      return;
+  /* ---------- Kural of the day: Tamil drawn as dot-matrix + English meaning ----------
+     Tamil needs proper shaping (vowel signs, ligatures), so the phone's own Tamil font renders
+     the words and each pixel of that small raster becomes one VFD dot. */
+  const tamilCache = new Map();
+  function tamilBits(str, hd) {
+    const key = str + '|' + hd;
+    let r = tamilCache.get(key);
+    if (r) return r;
+    if (tamilCache.size > 60) tamilCache.clear();
+    const fs = Math.round(hd * 0.8), font = `600 ${fs}px "Noto Sans Tamil", "Noto Sans Tamil UI", "Tamil Sangam MN", "Latha", sans-serif`;
+    const m = mkCanvas(8, 8).getContext('2d'); m.font = font;
+    const wd = Math.max(1, Math.ceil(m.measureText(str).width) + 2);
+    const c = mkCanvas(wd, hd), g = c.getContext('2d', { willReadFrequently: true });
+    g.font = font; g.textBaseline = 'middle'; g.fillStyle = '#fff';
+    g.fillText(str, 1, hd / 2 + 1);
+    const d = g.getImageData(0, 0, wd, hd).data, bits = new Uint8Array(wd * hd);
+    let last = 0;
+    for (let i = 0; i < wd * hd; i++) if (d[i * 4 + 3] > 107) { bits[i] = 1; last = Math.max(last, i % wd); }
+    r = { bits, w: Math.min(wd, last + 2), stride: wd, h: hd };
+    tamilCache.set(key, r);
+    return r;
+  }
+  function drawTamilRow(g, words, x, y, p, color, hd) {
+    const space = Math.round(hd * 0.35);
+    const parts = words.map((wd) => tamilBits(wd, hd));
+    const total = parts.reduce((a, b2) => a + b2.w, 0) + space * (parts.length - 1);
+    const gs = sprite(color, p, 'ghost'), go = gs.width / 2 - p / 2;
+    for (let yy = 0; yy < hd; yy++) for (let xx = 0; xx < total; xx++) g.drawImage(gs, x + xx * p - go, y + yy * p - go);
+    const sp = sprite(color, p, 'glow'), o = sp.width / 2 - p / 2;
+    const prev = g.globalCompositeOperation; g.globalCompositeOperation = 'lighter';
+    let ox = 0;
+    for (const b2 of parts) {
+      for (let yy = 0; yy < b2.h; yy++) for (let xx = 0; xx < b2.w; xx++) if (b2.bits[yy * b2.stride + xx]) g.drawImage(sp, x + (ox + xx) * p - o, y + yy * p - o);
+      ox += b2.w + space;
     }
-    const it = od.items[Math.floor(now / 600e3) % od.items.length]; // a different event every 10 min
-    const avail = bottom - L.pad * 2, inner = w - L.pad * 2;
-    let tp = L.s1, lines = [];
-    for (const cand of [L.s3, L.s2, L.s1]) {
-      lines = wrap(it.text, Math.floor((inner + cand) / (6 * cand)), 12);
-      tp = cand;
-      if (lines.length * LH * cand <= avail * 0.55) break;
+    g.globalCompositeOperation = prev;
+    return total;
+  }
+  function drawKural(g, w, h, now) {
+    const st = status('kural', now), k = ST.kural.data;
+    const bottom = statusLine(g, w, h, k ? 'THIRUKKURAL · ' + k.n + ' OF 1330' : 'THIRUKKURAL', st);
+    if (!k || k.date !== todayKey()) { centerMsg(g, w, bottom, ST.kural.fails ? 'NO DATA' : 'LOADING', ST.kural.err); return; }
+    const inner = w - L.pad * 2, avail = bottom - L.pad * 2, HD = 22;
+    const wrapTa = (line, p) => { // word-wrap one Tamil line into rows that fit the width
+      const words = line.split(/\s+/).filter(Boolean), rows = [];
+      let cur = [], cw = 0;
+      for (const wd of words) {
+        const ww = tamilBits(wd, HD).w + (cur.length ? Math.round(HD * 0.35) : 0);
+        if (cur.length && (cw + ww) * p > inner) { rows.push(cur); cur = [wd]; cw = tamilBits(wd, HD).w; }
+        else { cur.push(wd); cw += ww; }
+      }
+      if (cur.length) rows.push(cur);
+      return rows;
+    };
+    let best = null;
+    for (let tp = L.s1 + 2; tp >= 2 && !best; tp--) {
+      for (const ep of [L.s2, L.s1]) {
+        const r1 = wrapTa(k.ta[0], tp), r2 = wrapTa(k.ta[1], tp);
+        if (r1.length > 2 || r2.length > 2) break; // too big to keep the two-line couplet shape
+        const rows = [...r1, ...r2];
+        const en = wrap(k.en, Math.floor((inner + ep) / (6 * ep)));
+        if (en.length > 9) continue; // too long at this size: try the smaller English size
+        const hTa = rows.length * HD * tp + (rows.length - 1) * tp * 3;
+        const total = th(L.s1) + L.pad + hTa + L.pad * 1.4 + en.length * LH * ep;
+        if (total <= avail) { best = { tp, ep, rows, en, hTa, total }; break; }
+      }
     }
-    const textH = lines.length * LH * tp;
-    const ys = String(it.year);
-    const Py = fitP(Math.max(4, ys.length), w * 0.7, Math.max(L.s2 * 7, avail - textH - th(L.s2) - L.pad * 3) , L.s3 * 3);
-    const total = th(L.s2) + L.pad + th(Py) + L.pad * 1.5 + textH;
-    let y = Math.max(L.pad, Math.round((bottom - total) / 2));
-    text(g, head, w / 2, y, L.s2, PAL.accent, 'center'); y += th(L.s2) + L.pad;
-    text(g, ys, w / 2, y, Py, PAL.main, 'center', true); y += th(Py) + L.pad * 1.5;
-    for (const ln of lines) { text(g, ln, w / 2, y, tp, PAL.main, 'center'); y += LH * tp; }
+    if (!best) { const tp = 2, ep = L.s1; const rows = [...wrapTa(k.ta[0], tp), ...wrapTa(k.ta[1], tp)]; best = { tp, ep, rows, en: wrap(k.en, Math.floor((inner + ep) / (6 * ep)), 5), hTa: rows.length * HD * tp, total: avail }; }
+    let y = L.pad + Math.max(0, Math.round((avail - best.total) / 2));
+    if (k.ch) fitText(g, k.ch, w / 2, y, inner, L.s1, PAL.accent, 'center');
+    y += th(L.s1) + L.pad;
+    for (const row of best.rows) {
+      const rw = row.reduce((a, wd, i) => a + tamilBits(wd, HD).w + (i ? Math.round(HD * 0.35) : 0), 0) * best.tp;
+      drawTamilRow(g, row, Math.round((w - rw) / 2), y, best.tp, PAL.main, HD);
+      y += HD * best.tp + best.tp * 3;
+    }
+    y += L.pad * 1.4 - best.tp * 3;
+    for (const ln of best.en) { text(g, ln, w / 2, y, best.ep, PAL.main, 'center'); y += LH * best.ep; }
   }
 
-  /* ---------- 2. world map ---------- */
-  // Simplified coastlines as [lon,lat,...] rings (hand-reduced, ~1-3 deg accuracy).
-  const LAND = [
-    // North America
-    [-168,65,-162,70,-156,71.3,-140,69.6,-128,70,-115,68.5,-95,72,-82,73,-78,68,-90,64,-94,59,-86,55.5,-80,52,-78,58,-77,62,-70,61,-64,60,-61,56,-56,52,-60,47,-66,45,-70,43,-70,41.5,-74,40.5,-76,38,-76,35,-81,31.5,-80,27,-80.5,25.2,-82,26.5,-83,29.8,-89,30.2,-94,29.5,-97,27.8,-97.5,24,-97.8,22,-95,18.5,-91,18.7,-90.5,21,-87,21.5,-88,16,-84,15,-83.5,11,-81.5,9,-79,9.5,-77.3,8.5,-78,7.2,-80,7.4,-83,8.3,-86,11,-87.5,13,-92,14.5,-95,16,-98,16,-105,19.5,-106,23,-109.5,26.5,-112.5,29,-114.8,31.5,-113,29,-110,23,-112,25,-114,28,-115,30,-117,32.5,-120.5,34.5,-122.5,37.5,-124,40,-124.5,43,-124,46,-124.7,48.4,-123,49,-127,50.5,-130,54,-133,57,-137,58.5,-140,59.8,-146,60.5,-152,59,-154,57.5,-158,56,-163,54.6,-158,58,-162,58.7,-166,61.5,-165,63,-168,65],
-    // Greenland
-    [-73,78,-60,82,-30,83.5,-20,82,-18,77,-22,72,-24,69,-32,68,-40,65,-43,60,-48,61,-52,64.5,-54,68,-56,72,-66,76,-73,78],
-    // Baffin, Arctic archipelago
-    [-80,73.5,-72,72,-62,67,-65,63,-72,62.5,-78,64.5,-75,68,-82,70,-80,73.5],
-    [-120,74,-100,73,-90,76,-80,77,-65,82,-90,82,-110,78,-122,76,-120,74],
-    // Cuba, Hispaniola
-    [-84.9,21.9,-82,23.2,-80,23,-77,21.6,-74.2,20.2,-77.7,19.9,-78.5,21.5,-81.8,22.2,-84.9,21.9],
-    [-74.4,18.4,-72.8,19.9,-70,19.7,-68.4,18.6,-71,18.2,-74.4,18.4],
-    // South America
-    [-77,8.5,-75,11,-71.5,12.4,-68,10.6,-62,10.7,-60,8.5,-57,6,-52,5,-50,1.5,-48,-1,-44,-2.5,-39,-3.5,-35,-5.5,-35,-9,-37,-12,-39,-15,-39.5,-18,-41,-22,-44,-23,-48,-26,-49,-29,-53,-33.5,-55,-35,-57.5,-35,-57,-37,-62,-39,-65,-41,-63.5,-42.5,-65.5,-45,-67.5,-46.5,-66,-48,-69,-51,-68.5,-52.5,-69.5,-55,-72,-54,-75,-52,-74.5,-48,-74,-44,-73.5,-40,-73.5,-37,-71.5,-32,-71.3,-28,-70.5,-23,-70.2,-18.5,-75,-15.5,-77,-12,-79.5,-7.5,-81.2,-5.5,-80,-3,-80.5,-0.5,-79.5,1,-78.5,2.5,-77.5,4,-77.3,7,-77,8.5],
-    // Eurasia
-    [-9.3,38.7,-8.9,42,-9.3,43.2,-8,43.7,-1.8,43.4,-1.2,46,-2.3,47.2,-4.7,48,-1.6,48.7,1.5,50,3,51.2,4.5,52.5,7,53.5,8.6,53.9,8.5,55.5,8.1,56.9,10.5,57.7,10.8,56.3,12.5,55.6,10.9,54.4,14,54,18,54.8,21,55.2,21.2,56.8,23.8,57.4,24.3,59.4,28.5,59.7,30,60.2,23,60,21.4,60.9,21.5,62.6,25,65,25.3,65.4,22,65.7,21.5,64.5,17.8,62.5,18.5,60,17,58.5,16,56.2,14.5,56.2,12.6,56.2,11,58.7,8,58.1,5.6,58.9,5,61,5.3,62.5,8,63.5,11,64.6,13,67,15,68.5,18,69.7,21,70.2,25,71.1,28.5,71,31,70,33,69.5,36.5,69,40.5,67.5,41,66.3,38,66,33.5,66.5,34.7,65,36.5,64.6,37.5,64,40,64.5,44,66,44,68.4,46,68,53,68.6,57,68.6,60,69.8,65,69,68.5,68.2,66.7,69.8,67,71,69,73,72.5,72.8,72.5,71,73.5,68.5,78,72,80.5,73.5,87,74,86.7,75.1,95,76,100,79,104,77.7,106,77,113,76,113.5,73.5,119,73,127,73.5,129,71,132,71.8,140,72.4,146,72.3,150,71.5,153,70.9,160,70.6,161,69.5,168,70,175,69.8,180,69,180,65,178.5,64.6,177,62.5,173,61.2,170,60,166,60.3,163.5,59.9,162,58,163,56.2,162,54.8,160,53,158.5,52,156.7,51,156,53.5,155.5,57,156.7,57.8,159,58.5,161.8,60.3,160,61.5,156.5,61.6,154,59.5,151,59.2,145,59.3,142,59,138,56.6,135.2,54.7,137.2,54,139,54.2,141.3,53,141.2,51.7,140,48.5,138,46.5,135,43.5,133,42.8,130.7,42.3,129.7,41,128,39.8,129.4,37,129.3,35.2,126.5,34.5,126.3,36.7,126.2,37.7,125,37.7,124.7,39.6,121.6,38.9,121.2,40.8,118,39.2,119,37.2,122.5,37.4,120.3,36,119.2,34.6,120.7,32.5,121.9,31.6,121.9,30,121.4,28.3,119.6,25.7,117.3,23.6,114,22.3,111,21.5,110.4,20.3,109.5,21.6,108,21.6,106.7,20.6,105.7,19,106.6,17.5,108.8,15.4,109.3,12,107,10.4,105,8.7,104.8,10.3,103,11,101,12.7,100,13.4,99.2,10.5,100.3,8.4,101.3,6.9,103,5.5,103.5,1.4,101.3,2.6,100.3,5,98.3,7.9,98.5,12,97.7,16.5,96.3,16.8,94.3,16.2,94.4,18.8,93,20,92,21.5,90.5,22,89,21.8,87,21.5,86.9,20.6,85,19.4,82.2,16.6,80.2,15.5,80.2,13,79.8,10.3,78.2,8.9,77.5,8,76.5,8.9,75.7,11.3,74.8,12.8,73.5,15.9,72.8,19.2,72.6,21.3,70.5,20.8,69,22.4,70.2,22.8,68.5,23.5,67,24.7,66.5,25.4,64.5,25.2,61.5,25.1,57.4,25.7,56.4,27.1,54.7,26.5,51.5,27.9,50,30,48,30,48.8,27.6,50.1,26.7,51.5,24.5,54,24.1,56,26,56.4,24.8,58.6,23.6,59.8,22.4,57.8,19,55,17,52,15.9,49.5,14.5,45,12.8,43.5,12.7,42.7,15.7,41.2,19,39,21.5,38.6,24,35.2,28,34.7,29.5,34.2,31.3,34.9,32.8,35.9,35.5,36.2,36.6,34.5,36.8,32.5,36.1,30.5,36.3,29,36.7,27.3,37,26.3,38.3,26.8,39.5,26.2,40.6,28.8,41,29.2,41.2,31.3,41.1,33.5,42,35.2,42,38.3,40.9,41.5,41.5,41.5,42.6,39.9,43.4,38,44.4,39.2,47.2,35,45.5,36.5,45.2,33.5,44.5,32.5,45.3,33.5,46,31.7,46.3,30.7,46.6,29.6,45.3,28.7,44.3,27.7,42.5,28,41.6,26.4,41.2,23.6,40.1,22.6,40.3,23.3,39.2,22.7,37.5,21.7,36.8,21.1,38.3,19.4,40.3,19.4,41.8,16,43.5,13.6,45.4,12.3,45.3,12.4,44,14,42.4,16,41.4,18.5,40.2,16.8,38.9,15.6,38,16.2,39,15.7,40,14.2,40.8,12.3,41.7,10.5,42.9,8.8,44.4,7.5,43.8,6.2,43.1,4.6,43.4,3.1,43.1,3.2,42,0.8,41,-0.3,39.5,0.2,38.7,-0.7,37.6,-2.1,36.7,-4.4,36.7,-5.6,36,-6.3,36.8,-7.5,37.2,-8.9,37,-9.3,38.7],
-    // British Isles, Iceland, Svalbard, Novaya Zemlya
-    [-5.7,50,1.4,51.2,1.7,52.7,0.2,53.5,-1.6,55.6,-2,57.6,-3.3,58.6,-5,58.6,-6.2,57.5,-5.6,56,-4.9,54.8,-3.2,54.2,-3,53.4,-4.5,53.2,-4.2,52.2,-5.2,51.7,-3.3,51.4,-5.7,50],
-    [-6,52.2,-6.2,53.9,-5.6,54.6,-7.3,55.3,-8.5,54.4,-10,54.2,-9.5,52.5,-10.3,51.6,-8,51.6,-6,52.2],
-    [-24,65.5,-22,66.4,-18,66.2,-14.5,66.3,-13.6,65,-15,64.3,-18.7,63.4,-22.5,63.8,-24,65.5],
-    [11,78.5,15,77,19,76.6,22,78,27,80,20,80.5,11,79.8,11,78.5],
-    [52,71.5,55,70.6,57.5,70.7,56,72.5,60,75.5,68,77,64,75.5,55,73.5,52,71.5],
-    // Africa, Madagascar
-    [-5.9,35.8,-2,35.1,1,36.5,3,36.8,8.5,36.9,10.3,37.2,11,36.8,10.2,35,11,33.5,13,32.9,15.3,32.3,19,30.3,20,31,20,32.5,23,32.7,25,31.6,29,30.9,32,31.3,34.2,31.3,34.9,29.5,32.5,29.9,33.8,27.3,35.5,24,37.2,21,37.4,18.5,38.6,17.9,39.7,15.5,41.2,14.5,43.3,12.5,44,10.5,45.8,10.8,49,11.3,51.2,11.8,51,10.4,50.5,9,49,6,47.8,4.2,45.5,2,43,-0.5,41.5,-1.8,40,-3.3,39.2,-4.7,39.5,-6.5,39.3,-8,40.4,-10.5,40.5,-15,39.5,-16.8,36.8,-18,35.3,-21.5,35.5,-24,33,-25.5,32.8,-28.5,31,-29.9,28,-33,25.7,-34,22.6,-34,20,-34.8,18.4,-34.2,18.2,-32,17.2,-29,15.2,-27,14.4,-22.5,11.8,-17.3,11.8,-15.8,13.6,-12,13.2,-9.2,12.3,-6.1,11.8,-4.5,9.6,-2.3,9.3,0.5,9.8,3,8.5,4.5,6,4.3,4.5,6.3,2,6.3,-2,4.8,-4.5,5.2,-7.5,4.4,-9.5,5.5,-11.5,6.9,-13.3,8.6,-15,11,-16.7,12.5,-17.4,14.7,-16.5,16.5,-16.2,19.3,-17,21,-15,24.5,-13.5,26.8,-11.5,28.2,-9.8,29.5,-9.7,31.6,-8.5,33.4,-6.8,34,-5.9,35.8],
-    [49.3,-12,50.5,-15.5,49.5,-17.5,48,-22,47,-25,45,-25.5,43.5,-22,44.3,-19,44,-17,46,-15.7,48,-13.5,49.3,-12],
-    // Japan, Sakhalin, Taiwan, Hainan, Sri Lanka
-    [130,31,131.3,31.4,132,33.8,134.7,33.8,136,34,137,34.6,139,34.8,140,35.2,140.8,36,141,38,142,39.5,141.4,41.4,140,41.5,139.9,40.5,139.5,38.2,137.3,36.8,136.8,37.3,136,35.6,133,35.5,131,34.4,130,33.3,130,31],
-    [140,41.5,141.7,42.6,143.3,42,145.5,43.3,145,44.3,142,45.5,141.6,45,141.3,43.2,140,42.6,140,41.5],
-    [142,46,143.5,46.5,143,49,144.7,49,143,54,142.4,54.3,141.8,52,142.2,47,142,46],
-    [120.1,23,121,25.3,122,25,121,22,120.1,23],
-    [108.6,19.2,110.5,20.1,111,19.6,110,18.2,108.6,19.2],
-    [79.8,9.8,81.9,7.5,81.2,6.1,80,6,79.8,9.8],
-    // Philippines
-    [120.6,18.5,122.3,18.5,122,16,121.6,14.2,124,13,123,13,120.6,14.2,119.8,16.3,120.6,18.5],
-    [122,11.5,124,12.5,125.5,11,124.5,10,122.5,9.5,122,11.5],
-    [122,7,124,9,126,9.3,126.6,7,125.4,5.7,124,6.3,122,7],
-    // Indonesia, New Guinea
-    [109,1.6,110,1.7,111.8,2.8,113.2,3.2,115.5,5.3,116.8,7,118.5,5.5,119.2,5,118,4.3,118,2.2,119,1,117.8,0.9,117.5,-0.8,116.6,-2,116,-3.8,114.5,-3.5,111.7,-3,110.2,-3,110,-1.5,109,0,109,1.6],
-    [95.2,5.6,97.5,5.2,100.4,2.3,103.8,-1,106,-3,105.8,-5.8,104.5,-5.9,102.3,-4,100.3,-1,98.6,1.7,96.4,3.8,95.2,5.6],
-    [105.2,-6.8,106,-5.9,108.3,-6.2,110.5,-6.9,112.6,-6.9,114.5,-7.7,114.4,-8.7,111,-8.2,108,-7.8,105.2,-6.8],
-    [119.4,-5.5,120.5,-5.6,121,-2.7,122.6,-4.5,123.3,-1,121,-1.3,123,0.9,125,1.5,120.5,0.6,119.8,0,118.8,-2.8,119.4,-5.5],
-    [131,-1.4,134,-0.8,135,-3.3,138,-1.7,141,-2.6,145,-4.2,146,-5.4,147.6,-6.1,147,-7.8,149,-9.6,150.8,-10.3,148,-10.2,146,-8.2,144,-7.7,143,-9.3,141,-9.1,139,-8.1,138,-7.7,138.7,-6.8,137.8,-5.1,135,-4.4,133.5,-3.6,132,-2.8,131,-1.4],
-    // Australia, Tasmania, New Zealand
-    [113.4,-22,114.2,-21.8,116.7,-20.6,121,-19.5,122.3,-17.2,124,-16.3,125.7,-14.4,127.8,-14.3,129.6,-14.9,130.3,-12.7,132.6,-11.5,135,-12.2,136.9,-12.2,135.9,-13.4,135.4,-15,137.2,-15.9,139.3,-17.4,140.8,-17.4,141.6,-15,141.6,-12.6,142.5,-10.7,143.3,-12,143.5,-14.2,145.3,-15,146.2,-18.8,148.8,-20.4,150.8,-22.5,153.1,-25.2,153.6,-28.6,153,-31,151.3,-33.8,150,-37.4,147.8,-37.9,146.3,-39.1,144.9,-37.9,143.6,-38.8,140.6,-38,139.6,-37.2,139.4,-35.6,138.1,-35.6,138.5,-34.4,137.8,-32.9,137.5,-34,136,-35,136,-34,135.2,-34.6,134.2,-32.8,131.3,-31.5,128,-32.2,124.4,-33.3,123,-33.9,119.9,-34,117.9,-35.1,115,-34.3,115.7,-31.9,115,-29.5,114.2,-26.3,113.4,-24.4,113.4,-22],
-    [144.6,-40.7,148.3,-40.9,148,-43,146.8,-43.6,145.2,-42.4,144.6,-40.7],
-    [172.7,-34.4,174.4,-35.6,176,-37.6,178.5,-37.7,177.9,-39.1,176.8,-40,175.2,-41.6,174.6,-41.2,175,-39.6,173.8,-39.3,174.6,-38,172.7,-34.4],
-    [172.7,-40.5,174.3,-41.6,173.3,-43,172.7,-43.8,171.2,-44.4,170.6,-45.9,169,-46.6,166.5,-46,166.8,-45.2,168.4,-44,170.8,-42.8,172,-41.3,172.7,-40.5],
-    // Antarctica (crude; south of the flat map's range, shown on the globe)
-    [-180,-90,180,-90,180,-78,165,-77,165,-71,150,-68,120,-66,90,-66,60,-67,30,-69,0,-70,-20,-73,-45,-77,-60,-73,-58,-63,-65,-66,-75,-71,-100,-73,-130,-74,-150,-77,-180,-78,-180,-90]
-  ].map((pts) => {
-    let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
-    for (let i = 0; i < pts.length; i += 2) {
-      x0 = Math.min(x0, pts[i]); x1 = Math.max(x1, pts[i]); y0 = Math.min(y0, pts[i + 1]); y1 = Math.max(y1, pts[i + 1]);
-    }
-    return { pts, x0, x1, y0, y1 };
-  });
-  const LAT_TOP = 82, LAT_BOT = -62;
-  const HOMES = [{ name: 'SIN', lat: 1.3521, lon: 103.8198, side: 1 }, { name: 'BLR', lat: 12.9716, lon: 77.5946, side: -1 }];
-  function inLand(lon, lat) {
-    for (const poly of LAND) {
-      if (lon < poly.x0 || lon > poly.x1 || lat < poly.y0 || lat > poly.y1) continue;
-      const p = poly.pts; let inside = false;
-      for (let i = 0, j = p.length - 2; i < p.length; j = i, i += 2) {
-        const yi = p[i + 1], yj = p[j + 1];
-        if ((yi > lat) !== (yj > lat) && lon < ((p[j] - p[i]) * (lat - yi)) / (yj - yi) + p[i]) inside = !inside;
-      }
-      if (inside) return true;
-    }
-    return false;
-  }
+  /* ---------- 2. SKY: India - Southeast Asia, live SIN<->BLR flights, regional quakes ---------- */
+  const RAD = Math.PI / 180;
+  const HOMES = [{ name: 'SIN', lat: 1.3644, lon: 103.9915, side: 1 }, { name: 'BLR', lat: 13.1986, lon: 77.7066, side: -1 }]; // airports
   /* Sub-solar point (low-precision almanac), for the day/night shading. */
   function subsolar(ts) {
-    const rad = Math.PI / 180;
     const n = (ts - Date.UTC(2000, 0, 1, 12)) / 864e5;
     const Lm = (280.46 + 0.9856474 * n) % 360;
-    const gm = ((357.528 + 0.9856003 * n) % 360) * rad;
-    const lam = (Lm + 1.915 * Math.sin(gm) + 0.02 * Math.sin(2 * gm)) * rad;
-    const eps = (23.439 - 4e-7 * n) * rad;
+    const gm = ((357.528 + 0.9856003 * n) % 360) * RAD;
+    const lam = (Lm + 1.915 * Math.sin(gm) + 0.02 * Math.sin(2 * gm)) * RAD;
+    const eps = (23.439 - 4e-7 * n) * RAD;
     const decl = Math.asin(Math.sin(eps) * Math.sin(lam));
     const ra = Math.atan2(Math.cos(eps) * Math.sin(lam), Math.cos(lam));
-    let eot = Lm * rad - ra;
-    eot = Math.atan2(Math.sin(eot), Math.cos(eot)) / rad * 4; // minutes
+    let eot = Lm * RAD - ra;
+    eot = (Math.atan2(Math.sin(eot), Math.cos(eot)) / RAD) * 4; // minutes
     const utcMin = (((ts % 864e5) + 864e5) % 864e5) / 6e4;
     let lon = 180 - (utcMin + eot) / 4;
     lon = ((lon + 540) % 360) - 180;
-    return { lat: decl / rad, lon };
+    return { lat: decl / RAD, lon };
   }
-  let mapBase = null; // {key, c, mask, cols, rows}
-  function getMapBase(mw, mh, now) {
-    const minute = Math.floor(now / 60e3);
-    const key = mw + 'x' + mh + '|' + minute + '|' + S.palette;
-    if (mapBase && mapBase.key === key) return mapBase.c;
-    let mask, cols, rows;
-    if (mapBase && mapBase.mw === mw && mapBase.mh === mh) { mask = mapBase.mask; cols = mapBase.cols; rows = mapBase.rows; }
-    else {
-      const sp = Math.max(4, Math.round(mw / 200));
-      cols = Math.floor(mw / sp); rows = Math.floor(mh / sp);
+  // Natural Earth coastline for the region (tools/build-region.mjs), loaded after the first frame.
+  let REG = null;
+  function loadRegion() {
+    if (REG || document.getElementById('regData')) return;
+    const sc = document.createElement('script');
+    sc.id = 'regData'; sc.src = 'region.js'; sc.async = true;
+    sc.onload = () => { REG = window.MC_REGION || null; skyBase = null; forceDraw = true; };
+    document.head.appendChild(sc);
+  }
+  const SKY_FIT = { w: 70, e: 108, s: -5, n: 26 }; // always visible: India, Sri Lanka, the Bay of Bengal, Malaysia, Singapore
+  function skyGeom(w, h) {
+    const pad = L.pad, mx = pad, my = Math.round(pad / 2);
+    const mw = w - pad * 2, full = h - (LH * L.s1 * 2 + pad) - my - Math.round(pad / 2);
+    const mh = L.portrait ? Math.round(full * 0.64) : full; // portrait: flight board below the map
+    const lat0 = (SKY_FIT.s + SKY_FIT.n) / 2, cosl = Math.cos(lat0 * RAD);
+    const k = Math.min(mw / ((SKY_FIT.e - SKY_FIT.w) * cosl), mh / (SKY_FIT.n - SKY_FIT.s)); // px per degree of latitude
+    return { mx, my, mw, mh, k, cosl, lat0, lonC: (SKY_FIT.w + SKY_FIT.e) / 2, by: my + mh + pad, bb: my + full };
+  }
+  const skyXY = (G, lon, lat) => [G.mx + G.mw / 2 + (lon - G.lonC) * G.cosl * G.k, G.my + G.mh / 2 - (lat - G.lat0) * G.k];
+  const inSky = (G, lon, lat) => { const [x, y] = skyXY(G, lon, lat); return x >= G.mx && x <= G.mx + G.mw && y >= G.my && y <= G.my + G.mh; };
+  function greatCircle(a, b, n) {
+    const la1 = a.lat * RAD, lo1 = a.lon * RAD, la2 = b.lat * RAD, lo2 = b.lon * RAD;
+    const d = 2 * Math.asin(Math.sqrt(Math.sin((la2 - la1) / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin((lo2 - lo1) / 2) ** 2));
+    const out = [];
+    for (let i = 0; i <= n; i++) {
+      const t = i / n, A = Math.sin((1 - t) * d) / Math.sin(d), B = Math.sin(t * d) / Math.sin(d);
+      const x = A * Math.cos(la1) * Math.cos(lo1) + B * Math.cos(la2) * Math.cos(lo2);
+      const y = A * Math.cos(la1) * Math.sin(lo1) + B * Math.cos(la2) * Math.sin(lo2);
+      const z = A * Math.sin(la1) + B * Math.sin(la2);
+      out.push([Math.atan2(y, x) / RAD, Math.atan2(z, Math.hypot(x, y)) / RAD]);
+    }
+    return out;
+  }
+  let skyBase = null;
+  function getSkyBase(G, now) {
+    const key = [G.mw, G.mh, Math.floor(now / 60e3), S.palette, !!REG].join('|');
+    if (skyBase && skyBase.key === key) return skyBase.c;
+    const sp = Math.max(5, Math.round(Math.min(G.mw, G.mh) / 100));
+    const cols = Math.floor(G.mw / sp), rows = Math.floor(G.mh / sp);
+    let mask = skyBase && skyBase.cols === cols && skyBase.rows === rows && skyBase.reg === !!REG ? skyBase.mask : null;
+    if (!mask) { // rasterise the coastline polygons at dot resolution, then read back which dots are land
       mask = new Uint8Array(cols * rows);
-      for (let r = 0; r < rows; r++) {
-        const lat = LAT_TOP - ((r + 0.5) * (LAT_TOP - LAT_BOT)) / rows;
-        for (let c = 0; c < cols; c++) mask[r * cols + c] = inLand(-180 + ((c + 0.5) * 360) / cols, lat) ? 1 : 0;
+      if (REG) {
+        const m = mkCanvas(cols, rows), mg = m.getContext('2d', { willReadFrequently: true });
+        const fx = cols / G.mw, fy = rows / G.mh;
+        mg.fillStyle = '#fff'; mg.beginPath();
+        for (const r of REG.rings) {
+          for (let i = 0; i < r.length; i += 2) {
+            const [x, y] = skyXY(G, r[i], r[i + 1]), px = (x - G.mx) * fx, py = (y - G.my) * fy;
+            if (i) mg.lineTo(px, py); else mg.moveTo(px, py);
+          }
+          mg.closePath();
+        }
+        mg.fill();
+        const d = mg.getImageData(0, 0, cols, rows).data;
+        for (let i = 0; i < cols * rows; i++) mask[i] = d[i * 4 + 3] > 110 ? 1 : 0;
       }
     }
-    const c = (mapBase && mapBase.c && mapBase.c.width === mw && mapBase.c.height === mh) ? mapBase.c : mkCanvas(mw, mh);
-    const g = c.getContext('2d'); g.clearRect(0, 0, mw, mh);
-    const sx = mw / cols, sy = mh / rows, rad = Math.PI / 180;
-    const sun = subsolar(now), sl = Math.sin(sun.lat * rad), cl = Math.cos(sun.lat * rad);
+    const c = skyBase && skyBase.c && skyBase.c.width === G.mw && skyBase.c.height === G.mh ? skyBase.c : mkCanvas(G.mw, G.mh);
+    const g = c.getContext('2d'); g.clearRect(0, 0, G.mw, G.mh);
+    const sun = subsolar(now), sl = Math.sin(sun.lat * RAD), cl = Math.cos(sun.lat * RAD);
     const day = new Path2D(), dusk = new Path2D(), night = new Path2D(), sea = new Path2D();
-    const rL = Math.min(sx, sy) * 0.36, rS = Math.min(sx, sy) * 0.14;
+    const sx = G.mw / cols, sy = G.mh / rows, rL = Math.min(sx, sy) * 0.36, rS = Math.min(sx, sy) * 0.14;
     for (let r = 0; r < rows; r++) {
-      const lat = LAT_TOP - ((r + 0.5) * (LAT_TOP - LAT_BOT)) / rows;
-      const sla = Math.sin(lat * rad), cla = Math.cos(lat * rad);
-      const y = (r + 0.5) * sy;
-      for (let k = 0; k < cols; k++) {
-        const x = (k + 0.5) * sx;
-        if (!mask[r * cols + k]) { sea.moveTo(x + rS, y); sea.arc(x, y, rS, 0, Math.PI * 2); continue; }
-        const lon = -180 + ((k + 0.5) * 360) / cols;
-        const cz = sla * sl + cla * cl * Math.cos((lon - sun.lon) * rad);
+      const y = (r + 0.5) * sy, lat = G.lat0 - (y - G.mh / 2) / G.k;
+      const sla = Math.sin(lat * RAD), cla = Math.cos(lat * RAD);
+      for (let q = 0; q < cols; q++) {
+        const x = (q + 0.5) * sx;
+        if (!mask[r * cols + q]) { sea.moveTo(x + rS, y); sea.arc(x, y, rS, 0, Math.PI * 2); continue; }
+        const lon = G.lonC + (x - G.mw / 2) / (G.cosl * G.k);
+        const cz = sla * sl + cla * cl * Math.cos((lon - sun.lon) * RAD);
         const path = cz > 0.05 ? day : cz > -0.1 ? dusk : night;
         path.moveTo(x + rL, y); path.arc(x, y, rL, 0, Math.PI * 2);
       }
@@ -895,99 +920,129 @@ _ 00000 00000 00000 00000 00000 00000 11111
     g.globalAlpha = 0.6; g.fill(dusk);
     g.globalAlpha = 0.33; g.fill(night);
     g.globalAlpha = 1;
-    mapBase = { key, c, mask, cols, rows, mw, mh };
+    if (!REG) text(g, 'LOADING MAP', G.mw / 2, G.mh / 2, L.s1, PAL.dim, 'center');
+    skyBase = { key, c, mask, cols, rows, reg: !!REG };
     return c;
   }
-  const RAD = Math.PI / 180;
-  function mapGeom(w, h) {
-    const pad = L.pad, bottom = h - (LH * L.s1 * 2 + pad);
-    if (L.portrait) {
-      const R = Math.floor(Math.min(w - pad * 2, bottom - pad * 2) / 2);
-      const iss = ST.iss.data;
-      const c = iss ? { lat: iss.lat, lon: iss.lon } : { lat: 1.35, lon: 103.82 };
-      return { globe: true, cx: Math.round(w / 2), cy: Math.round(pad + (bottom - pad) / 2), R, c };
+
+  /* Flights: live positions from adsb.lol (via your CORS proxy), routes from adsbdb.
+     Only real positions are shown; a flight out of receiver range keeps its last fix, marked with its time. */
+  const SKY_CARRIERS = { SIA: 'SQ', TGW: 'TR', IGO: '6E', AIC: 'AI', AXB: 'IX', AKJ: 'QP', VTI: 'UK', MAS: 'MH' };
+  const ROUTE_KEY = 'mc.routes.v1';
+  const routeCache = LS.get(ROUTE_KEY, {});
+  async function routeOf(cs) {
+    let j = null;
+    try { j = await fetchWithTimeout('https://api.adsbdb.com/v0/callsign/' + encodeURIComponent(cs), 10e3); }
+    catch (e) { if (!/^HTTP 404/.test(e.message)) throw e; }
+    const fr = j && j.response && j.response.flightroute;
+    const o = fr && fr.origin && fr.origin.iata_code, d = fr && fr.destination && fr.destination.iata_code;
+    const r = (o === 'SIN' && d === 'BLR') || (o === 'BLR' && d === 'SIN') ? o + '-' + d : '';
+    routeCache[cs] = { r, t: Date.now() };
+    const ks = Object.keys(routeCache);
+    if (ks.length > 400) for (const k2 of ks.slice(0, ks.length - 400)) delete routeCache[k2];
+    LS.set(ROUTE_KEY, routeCache);
+    return r;
+  }
+  function flightFix(cs, r, a) {
+    const alt = typeof a.alt_baro === 'number' ? a.alt_baro : 0, ground = a.alt_baro === 'ground' || alt < 300;
+    const dest = HOMES.find((x) => x.name === r.slice(4));
+    return {
+      cs, fn: (SKY_CARRIERS[cs.slice(0, 3)] || cs.slice(0, 3)) + cs.slice(3), r,
+      lat: a.lat, lon: a.lon, trk: a.track != null ? a.track : (a.true_heading || 0), alt, ground,
+      landed: !!(ground && dest && Math.hypot(a.lat - dest.lat, a.lon - dest.lon) < 0.3),
+      seen: Date.now() - ((a.seen_pos != null ? a.seen_pos : a.seen) || 0) * 1000
+    };
+  }
+  async function skyFetch() {
+    const prev = (ST.sky.data && ST.sky.data.flights) || [];
+    const seen = new Map();
+    for (const hm of HOMES) { // everything within 250 nm of either airport
+      const j = await fetchWithTimeout(proxied(`https://api.adsb.lol/v2/point/${hm.lat.toFixed(2)}/${hm.lon.toFixed(2)}/250`), 15e3);
+      for (const a of (j && j.ac) || []) {
+        const cs = String(a.flight || '').trim();
+        if (cs && a.lat != null && SKY_CARRIERS[cs.slice(0, 3)]) seen.set(cs, a);
+      }
     }
-    let mw = w - pad * 2, mh = Math.round(mw / 2.5);
-    if (mh > bottom - pad) { mh = bottom - pad; mw = Math.round(mh * 2.5); }
-    return { globe: false, mx: Math.round((w - mw) / 2), my: Math.round(pad / 2 + (bottom - pad / 2 - mh) / 2), mw, mh };
-  }
-  const proj = (G, lon, lat) => [
-    G.mx + ((lon + 180) / 360) * G.mw,
-    G.my + ((LAT_TOP - Math.max(LAT_BOT, Math.min(LAT_TOP, lat))) / (LAT_TOP - LAT_BOT)) * G.mh
-  ];
-  /* Flat map or orthographic globe; returns null for points on the far side of the globe. */
-  function project(G, lon, lat) {
-    if (!G.globe) return proj(G, lon, lat);
-    const p0 = G.c.lat * RAD, p = lat * RAD, dl = (lon - G.c.lon) * RAD;
-    const cosc = Math.sin(p0) * Math.sin(p) + Math.cos(p0) * Math.cos(p) * Math.cos(dl);
-    if (cosc < 0) return null;
-    return [G.cx + G.R * Math.cos(p) * Math.sin(dl), G.cy - G.R * (Math.cos(p0) * Math.sin(p) - Math.sin(p0) * Math.cos(p) * Math.cos(dl))];
-  }
-  let globeGrid = null;
-  function getGlobeGrid() { // land/sea dots at ~1.5 deg, thinned towards the poles; computed once
-    if (globeGrid) return globeGrid;
-    const lat = [], lon = [], land = [];
-    for (let la = -88.5; la <= 88.6; la += 1.5) {
-      const step = Math.min(30, 1.5 / Math.max(0.05, Math.cos(la * RAD)));
-      for (let lo = -180 + step / 2; lo < 180; lo += step) { lat.push(la); lon.push(lo); land.push(inLand(lo, la) ? 1 : 0); }
+    const flights = new Map();
+    let lookups = 0;
+    for (const [cs, a] of seen) {
+      const c = routeCache[cs];
+      let r = c && Date.now() - c.t < 3 * 864e5 ? c.r : null;
+      if (r === null) {
+        if (lookups >= 8) continue; // be gentle with adsbdb; the rest get checked next minute
+        lookups++;
+        try { r = await routeOf(cs); } catch (e) { continue; }
+      }
+      if (r) flights.set(cs, flightFix(cs, r, a));
     }
-    globeGrid = { lat: Float32Array.from(lat), lon: Float32Array.from(lon), land: Uint8Array.from(land) };
-    return globeGrid;
-  }
-  function drawGlobe(g, G, now) {
-    const gr = getGlobeGrid(), sun = subsolar(now), sl = Math.sin(sun.lat * RAD), cl = Math.cos(sun.lat * RAD);
-    const p0 = G.c.lat * RAD, sp0 = Math.sin(p0), cp0 = Math.cos(p0);
-    const dot = G.R * 1.5 * RAD, rL = dot * 0.36, rS = dot * 0.14;
-    const day = new Path2D(), dusk = new Path2D(), night = new Path2D(), sea = new Path2D();
-    for (let i = 0; i < gr.lat.length; i++) {
-      const p = gr.lat[i] * RAD, dl = (gr.lon[i] - G.c.lon) * RAD;
-      const sp = Math.sin(p), cp = Math.cos(p), cdl = Math.cos(dl);
-      const cosc = sp0 * sp + cp0 * cp * cdl;
-      if (cosc <= 0.02) continue;
-      const x = G.cx + G.R * cp * Math.sin(dl), y = G.cy - G.R * (cp0 * sp - sp0 * cp * cdl);
-      const k = 0.45 + 0.55 * cosc; // dots shrink towards the limb
-      if (!gr.land[i]) { const r = rS * k; sea.moveTo(x + r, y); sea.arc(x, y, r, 0, Math.PI * 2); continue; }
-      const cz = sp * sl + cp * cl * Math.cos((gr.lon[i] - sun.lon) * RAD);
-      const path = cz > 0.05 ? day : cz > -0.1 ? dusk : night, r = rL * k;
-      path.moveTo(x + r, y); path.arc(x, y, r, 0, Math.PI * 2);
+    for (const f of prev) { // keep following flights that left both circles (the Bay of Bengal has no coverage)
+      if (flights.has(f.cs) || f.landed || Date.now() - f.seen > 5 * 3600e3) continue;
+      let a = null;
+      try { const j = await fetchWithTimeout(proxied('https://api.adsb.lol/v2/callsign/' + encodeURIComponent(f.cs)), 12e3); a = ((j && j.ac) || [])[0] || null; }
+      catch (e) { a = null; }
+      flights.set(f.cs, a && a.lat != null ? flightFix(f.cs, f.r, a) : f);
     }
-    g.fillStyle = PAL.main; g.globalAlpha = 0.1; g.fill(sea);
-    g.fillStyle = PAL.land; g.globalAlpha = 0.95; g.fill(day);
-    g.globalAlpha = 0.6; g.fill(dusk);
-    g.globalAlpha = 0.33; g.fill(night);
-    g.globalAlpha = 0.5; g.strokeStyle = PAL.dim; g.lineWidth = Math.max(1, L.s1 * 0.3);
-    g.beginPath(); g.arc(G.cx, G.cy, G.R + L.s1, 0, Math.PI * 2); g.stroke();
-    g.globalAlpha = 1;
+    return { flights: [...flights.values()] };
   }
-  function drawMap(g, w, h, now) {
-    const G = mapGeom(w, h);
-    const qd = ST.quakes.data, list = qd ? qd.list.filter((q) => now - q.t <= 864e5) : [];
-    const stI = status('iss', now), stQ = status('quakes', now);
-    const st = stI.stale || stI.none ? stI : stQ;
-    statusLine(g, w, h, (qd ? list.length + ' QUAKES M4.5+ · 24H' : 'QUAKES --') + ' · USGS · WHERETHEISS.AT', st);
-    if (G.globe) drawGlobe(g, G, now);
-    else g.drawImage(getMapBase(G.mw, G.mh, now), G.mx, G.my);
-    const lp = Math.max(2, L.s1 - 1);
+  const skyFlights = () => ((ST.sky.data && ST.sky.data.flights) || []).filter((f) => !f.landed);
+  function drawSky(g, w, h, now) {
+    const G = skyGeom(w, h);
+    const qd = ST.quakes.data, quakes = qd ? qd.list.filter((q) => now - q.t <= 864e5 && inSky(G, q.lon, q.lat)) : [];
+    const fl = skyFlights();
+    let left, st;
+    if (!skyReady()) { left = 'FLIGHTS NEED THE CORS PROXY (SETTINGS)'; st = { text: 'NO PROXY', color: PAL.warn }; }
+    else {
+      st = status('sky', now);
+      left = (ST.sky.data ? (fl.length ? fl.length + ' SIN-BLR FLIGHT' + (fl.length > 1 ? 'S' : '') : 'NO SIN-BLR FLIGHTS') : 'FLIGHTS') +
+        ' · ' + quakes.length + ' QUAKE' + (quakes.length === 1 ? '' : 'S');
+    }
+    statusLine(g, w, h, left, st);
+    g.drawImage(getSkyBase(G, now), G.mx, G.my);
+    // the SIN-BLR great circle
+    const gc = greatCircle(HOMES[0], HOMES[1], 90);
+    g.fillStyle = PAL.accent; g.globalAlpha = 0.55; g.beginPath();
+    let lx = -1e9, ly = -1e9;
+    for (const [lo, la] of gc) {
+      const [x, y] = skyXY(G, lo, la);
+      if (Math.hypot(x - lx, y - ly) < L.s1 * 2.2) continue;
+      g.moveTo(x + L.s1 * 0.35, y); g.arc(x, y, L.s1 * 0.35, 0, Math.PI * 2); lx = x; ly = y;
+    }
+    g.fill(); g.globalAlpha = 1;
+    const lp = Math.max(2, L.s1);
     for (const hm of HOMES) {
-      const xy = project(G, hm.lon, hm.lat); if (!xy) continue;
-      const [x, y] = xy;
+      const [x, y] = skyXY(G, hm.lon, hm.lat);
       if (hm.side > 0) text(g, hm.name, x + lp * 3, y + lp, lp, PAL.home);
       else text(g, hm.name, x - lp * 3, y - th(lp) - lp, lp, PAL.home, 'right');
     }
+    if (L.portrait && skyReady()) { // airport-style board: flight · route · altitude or last fix
+      const bp = L.s2, x = L.pad, bw = w - L.pad * 2;
+      let y = G.by;
+      dotLine(g, x, y - L.pad / 2, bw, Math.max(1, L.s1 - 1), PAL.dim);
+      text(g, 'SIN ▶ BLR  ·  BLR ▶ SIN', x, y, L.s1, PAL.accent); y += LH * L.s1 * 1.4;
+      const list = fl.slice().sort((a, b) => (now - a.seen > 5 * 60e3) - (now - b.seen > 5 * 60e3) || a.fn.localeCompare(b.fn));
+      if (!ST.sky.data) text(g, ST.sky.fails ? 'NO DATA' : 'LOADING', x, y, bp, PAL.dim);
+      else if (!list.length) text(g, 'NO FLIGHTS IN RANGE', x, y, bp, PAL.dim);
+      for (const f of list) {
+        if (y + LH * bp + th(L.s1) > G.bb) break;
+        const old = now - f.seen > 5 * 60e3;
+        const stat = old ? 'NO SIGNAL · LAST SEEN ' + hhmm(f.seen) : f.ground ? 'ON GROUND' : 'FL' + pad2(Math.round(f.alt / 1000)) + '0 · LIVE';
+        text(g, f.fn, x, y, bp, old ? PAL.dim : PAL.iss);
+        text(g, f.r.replace('-', ' ▶ '), x + bw, y, bp, PAL.main, 'right');
+        y += LH * bp;
+        text(g, stat, x, y, L.s1, old ? PAL.dim : PAL.main);
+        y += LH * L.s1 * 1.3;
+      }
+    }
   }
-  function dynMap(g, w, h, now, ts) {
-    const G = mapGeom(w, h);
-    const pulse = (ts % 2000) / 2000;
-    const u = Math.max(2, L.s1);
+  function dynSky(g, w, h, now, ts) {
+    const G = skyGeom(w, h), u = Math.max(2, L.s1), pulse = (ts % 2000) / 2000;
+    g.save(); g.beginPath(); g.rect(G.mx, G.my, G.mw, G.mh); g.clip();
     const qd = ST.quakes.data;
     if (qd) {
       for (const q of qd.list) {
-        if (now - q.t > 864e5) continue;
-        const xy = project(G, q.lon, q.lat); if (!xy) continue;
-        const [x, y] = xy;
-        const base = u * (0.8 + (q.mag - 4.5) * 0.9);
-        const fresh = now - q.t < 3 * 3600e3;
-        const ph = fresh ? pulse : 0.15;
+        if (now - q.t > 864e5 || !inSky(G, q.lon, q.lat)) continue;
+        const [x, y] = skyXY(G, q.lon, q.lat);
+        const base = u * (0.8 + (q.mag - 4.5) * 0.9), fresh = now - q.t < 3 * 3600e3, ph = fresh ? pulse : 0.15;
         g.strokeStyle = PAL.quake; g.lineWidth = Math.max(1, u * 0.4);
         g.globalAlpha = fresh ? 1 - ph : 0.55;
         g.beginPath(); g.arc(x, y, base + ph * u * 4, 0, Math.PI * 2); g.stroke();
@@ -997,43 +1052,30 @@ _ 00000 00000 00000 00000 00000 00000 11111
     }
     const blink = ((ts / 1000) | 0) % 2 === 0;
     for (const hm of HOMES) {
-      const xy = project(G, hm.lon, hm.lat); if (!xy) continue;
+      const [x, y] = skyXY(G, hm.lon, hm.lat);
       g.strokeStyle = PAL.home; g.lineWidth = Math.max(1, u * 0.35); g.globalAlpha = blink ? 1 : 0.5;
-      g.strokeRect(xy[0] - u * 1.2, xy[1] - u * 1.2, u * 2.4, u * 2.4); g.globalAlpha = 1;
+      g.strokeRect(x - u * 1.2, y - u * 1.2, u * 2.4, u * 2.4); g.globalAlpha = 1;
     }
-    const iss = ST.iss.data;
-    if (iss) {
-      const stale = isStale('iss', now);
-      const tr = iss.trail || [];
-      const sp = sprite(PAL.iss, Math.max(2, Math.round(u * 0.7)), 'glow'); const o = sp.width / 2;
-      g.globalCompositeOperation = 'lighter';
-      let prev = null;
-      for (let i = 0; i < tr.length; i++) {
-        const xy = project(G, tr[i].lon, tr[i].lat);
-        if (!xy) { prev = null; continue; }
-        const [x, y] = xy;
-        g.globalAlpha = 0.15 + 0.6 * (i / Math.max(1, tr.length - 1));
-        g.drawImage(sp, x - o, y - o);
-        if (prev && (G.globe || Math.abs(tr[i].lon - tr[i - 1].lon) < 90)) { // interpolate; skip antimeridian jumps
-          const [px, py] = prev, n = Math.floor(Math.hypot(x - px, y - py) / (u * 1.5));
-          for (let s2 = 1; s2 < n; s2++) g.drawImage(sp, px + ((x - px) * s2) / n - o, py + ((y - py) * s2) / n - o);
-        }
-        prev = xy;
-      }
-      g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
-      const xy = project(G, iss.lon, iss.lat);
-      if (xy) {
-        const [x, y] = xy;
-        g.strokeStyle = PAL.iss; g.lineWidth = Math.max(1, u * 0.4);
-        if (!stale) { g.globalAlpha = 1 - pulse; g.beginPath(); g.arc(x, y, u * (1.5 + pulse * 5), 0, Math.PI * 2); g.stroke(); }
-        g.globalAlpha = stale ? 0.45 : 1;
-        const big = sprite(PAL.iss, Math.max(3, u * 1.6), 'glow');
-        g.globalCompositeOperation = 'lighter'; g.drawImage(big, x - big.width / 2, y - big.height / 2);
-        g.globalCompositeOperation = 'source-over';
-        text(g, stale ? 'ISS (STALE)' : 'ISS', x + u * 3, y + u, Math.max(2, L.s1 - 1), PAL.iss);
-        g.globalAlpha = 1;
-      }
+    const lp = Math.max(2, L.s1 - 1);
+    for (const f of skyFlights()) {
+      if (!inSky(G, f.lon, f.lat)) continue;
+      const [x, y] = skyXY(G, f.lon, f.lat);
+      const old = now - f.seen > 5 * 60e3;          // out of receiver range: last real fix, dimmed
+      const a = (f.trk - 90) * RAD, r = u * 2.2;
+      if (!old) { g.strokeStyle = PAL.iss; g.lineWidth = Math.max(1, u * 0.4); g.globalAlpha = 1 - pulse; g.beginPath(); g.arc(x, y, u * (1.5 + pulse * 4), 0, Math.PI * 2); g.stroke(); }
+      g.globalAlpha = old ? 0.45 : 1;
+      const sp = sprite(PAL.iss, Math.max(3, Math.round(u * 1.3)), 'glow');
+      g.globalCompositeOperation = 'lighter'; g.drawImage(sp, x - sp.width / 2, y - sp.height / 2); g.globalCompositeOperation = 'source-over';
+      g.fillStyle = PAL.iss; g.beginPath(); // heading arrow
+      g.moveTo(x + Math.cos(a) * r * 1.6, y + Math.sin(a) * r * 1.6);
+      g.lineTo(x + Math.cos(a + 2.6) * r, y + Math.sin(a + 2.6) * r);
+      g.lineTo(x + Math.cos(a - 2.6) * r, y + Math.sin(a - 2.6) * r);
+      g.closePath(); g.fill();
+      const im = labelImg(old ? f.fn + ' ' + hhmm(f.seen) : f.fn, lp, PAL.iss);
+      g.drawImage(im, Math.round(x + u * 2.5), Math.round(y - im.height / 2));
+      g.globalAlpha = 1;
     }
+    g.restore();
   }
 
   /* ---------- 3. FX ---------- */
@@ -1428,7 +1470,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
             g.globalCompositeOperation = 'lighter'; g.drawImage(sp, x - sp.width / 2, y - sp.height / 2); g.globalCompositeOperation = 'source-over';
           }
           g.globalAlpha = 1;
-          if (k === 0) tags.push({ x, y, edge, t: bb.t, im: labelImg(sv.no + ' ' + busMin(bb.t, now), lp, col) });
+          if (k === 0) tags.push({ x, y, edge, t: bb.t, im: labelImg(sv.no, lp, col) });
         });
       }
     });
@@ -1913,9 +1955,10 @@ _ 00000 00000 00000 00000 00000 00000 11111
       ['h', 'DATA SOURCES'],
       ['t', 'WEATHER: OPEN-METEO.COM (CC BY 4.0) · AIR QUALITY: CAMS'],
       ['t', 'BUS: ARRIVELAH / LTA DATAMALL · MAP © OPENSTREETMAP (ODBL)'],
-      ['t', 'QUAKES: USGS · ISS: WHERETHEISS.AT'],
+      ['t', 'FLIGHTS: ADSB.LOL (ODBL) · ROUTES: ADSBDB · QUAKES: USGS'],
+      ['t', 'SKY MAP: NATURAL EARTH (PUBLIC DOMAIN)'],
       ['t', 'FX: FRANKFURTER - ECB DAILY REFERENCE RATES'],
-      ['t', 'ON THIS DAY: WIKIPEDIA (CC BY-SA 4.0)'],
+      ['t', 'KURAL: THIRUVALLUVAR · TEXT + ENGLISH: TK120404/THIRUKKURAL (APACHE-2.0)'],
       ['t', 'NEW RELEASES: ITUNES · HEADLINES: YOUR RSS FEED'],
       ['g', ''],
       ['h', 'CONTROLS'],
@@ -1943,7 +1986,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
   const PAGES = {
     clock: { draw: drawClock, key: (now) => Math.floor(now / 1000) },
     bus: { draw: drawBus, dyn: dynBus, fps: 15, dwellMul: 1.5, key: (now) => sig('bus', now) + Math.floor(now / 5000) + !!MM },
-    map: { draw: drawMap, dyn: dynMap, key: (now) => sig('iss', now) + sig('quakes', now) + Math.floor(now / 60e3) },
+    sky: { draw: drawSky, dyn: dynSky, fps: 20, key: (now) => sig('sky', now) + sig('quakes', now) + Math.floor(now / 60e3) + !!REG + skyReady() },
     fx: { draw: drawFx, key: (now) => sig('fx', now) },
     weather: { draw: drawWeather, key: (now) => sig('wx', now) + sig('aq', now) + Math.floor(now / 60e3) },
     news: { draw: drawNews, dyn: dynNews, dwellMul: 2, key: (now) => sig('news', now) + feedReady() },
@@ -1951,7 +1994,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
       draw: drawReleases, dyn: dynDeck, dynOn: () => player.state !== 'idle', fps: 30,
       key: (now) => sig('rel', now) + Math.floor(now / 3600e3) + '|' + player.state + (player.item ? player.item.id : '') + player.err + '|' + artVer
     },
-    otd: { draw: drawOtd, key: (now) => sig('otd', now) + Math.floor(now / 600e3) + todayKey() },
+    kural: { draw: drawKural, key: (now) => sig('kural', now) + todayKey() },
     countdown: { draw: drawCountdown, key: (now) => Math.floor(now / 1000) + S.cdDate + S.cdName },
     credits: { draw: drawCredits, key: () => String(!!wakeLock) + remoteState + (battery ? Math.round(battery.level * 100) + '' + battery.charging : '') }
   };
@@ -2155,6 +2198,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
       firstDrawn = true;
       try { performance.mark('mc-first-frame'); } catch (e) { /* ignore */ }
       setTimeout(loadMinimap, 300);
+      setTimeout(loadRegion, 600);
     }
   }
   let firstDrawn = false, drawnFrames = 0;
@@ -2307,10 +2351,10 @@ _ 00000 00000 00000 00000 00000 00000 11111
     forceDraw = true;
   }
   const PAGE_ALIASES = {
-    clock: 'clock', time: 'clock', bus: 'bus', buses: 'bus', world: 'map', map: 'map', iss: 'map', quakes: 'map',
+    clock: 'clock', time: 'clock', bus: 'bus', buses: 'bus', sky: 'sky', flights: 'sky', map: 'sky', world: 'sky', quakes: 'sky',
     fx: 'fx', rates: 'fx', forex: 'fx', weather: 'weather', wx: 'weather', news: 'news', headlines: 'news',
     music: 'releases', releases: 'releases', new: 'releases', singles: 'releases',
-    otd: 'otd', onthisday: 'otd', history: 'otd', countdown: 'countdown', trip: 'countdown', credits: 'credits'
+    kural: 'kural', thirukkural: 'kural', countdown: 'countdown', trip: 'countdown', credits: 'credits'
   };
   function showPage(name) {
     const n = parseInt(name, 10);
@@ -2322,7 +2366,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
   }
   function setPalette(v) {
     S.palette = v; LS.set('mc.settings', S); PAL = PALETTES[v];
-    layers.clear(); mapBase = null; mmImg = null; newsCache.clear(); newsLayout = null; hdr.key = ftr.key = null;
+    layers.clear(); skyBase = null; mmImg = null; newsCache.clear(); newsLayout = null; hdr.key = ftr.key = null;
     if (banner) banner.key = '';
     forceDraw = true;
   }
@@ -2443,7 +2487,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
     if (old.relArtists !== n.relArtists) resetSource('rel');
     if (old.rssUrl !== n.rssUrl || old.rssProxy !== n.rssProxy || old.rssDirect !== n.rssDirect) resetSource('news');
     PAL = PALETTES[S.palette];
-    layers.clear(); mapBase = null; mmImg = null; newsCache.clear(); newsLayout = null; hdr.key = ftr.key = null;
+    layers.clear(); skyBase = null; mmImg = null; newsCache.clear(); newsLayout = null; hdr.key = ftr.key = null;
     resize(); rebuildPages(); closeSettings(); schedTick(); remoteConnect(true);
   });
   function showRemoteUrls() {

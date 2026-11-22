@@ -3,12 +3,13 @@
  * offline and instantly. Cross-origin API calls are NOT intercepted; the app
  * keeps its own last-good copies in localStorage.
  * Bump CACHE when you deploy changes. */
-const CACHE = 'mc-shell-v8';
+const CACHE = 'mc-shell-v9';
 const ASSETS = [
   './',
   'index.html',
   'app.js',
   'minimap.js',
+  'region.js',
   'style.css',
   'manifest.webmanifest',
   'icons/icon-192.png',
