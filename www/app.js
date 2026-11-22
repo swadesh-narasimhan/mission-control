@@ -5,7 +5,7 @@
  * when nothing moved. */
 'use strict';
 (function () {
-  const APP_VERSION = '1.5.1';
+  const APP_VERSION = '1.6.0';
   const SLIDE_MS = 520;
   const LONGPRESS_MS = 650;
 
@@ -36,7 +36,7 @@
   ];
   const DEFAULTS = {
     relArtists: 'Anirudh Ravichander, Sai Abhyankkar',
-    rssUrl: 'https://www.business-standard.com/rss/markets-106.rss', rssProxy: '', rssDirect: false,
+    rssUrl: 'https://www.cnbctv18.com/commonfeeds/v1/cne/rss/market.xml', rssProxy: '',
     cdName: 'TRAIN TRIP', cdDate: '',
     palette: 'vfd', dwell: 6, notchMargin: 28,
     remoteOn: true, remoteTopic: '',
@@ -47,6 +47,10 @@
     const s = Object.assign({}, DEFAULTS, LS.get('mc.settings', {}));
     s.pages = Object.assign({}, DEFAULTS.pages, s.pages || {});
     s.fxAlerts = Object.assign({}, DEFAULTS.fxAlerts, s.fxAlerts || {});
+    if (s.rssUrl === 'https://www.business-standard.com/rss/markets-106.rss' && !s.feedMigrated) { // v1.6: switch to CNBC-TV18
+      s.rssUrl = DEFAULTS.rssUrl; s.feedMigrated = true; LS.set('mc.settings', s); LS.del('mc.cache.v1.news');
+    }
+    delete s.rssDirect; // replaced by automatic direct/proxy detection
     if (!s.remoteTopic) { // private, unguessable ntfy topic, created once per device
       const b = new Uint8Array(10);
       if (window.crypto && crypto.getRandomValues) crypto.getRandomValues(b);
@@ -57,7 +61,7 @@
     return s;
   }
   let S = loadSettings();
-  const feedReady = () => !!S.rssUrl && (isNative() || !!S.rssProxy || S.rssDirect);
+  const feedReady = () => !!S.rssUrl;
   const skyReady = () => isNative() || !!S.rssProxy;
   /* Your CORS proxy (Settings): {url} is replaced by the encoded target URL, otherwise it is appended. */
   function proxied(u) {
@@ -353,6 +357,18 @@ _ 00000 00000 00000 00000 00000 00000 11111
 
   /* ============================================================ data layer */
   const CK = 'mc.cache.v1.';
+  const FEEDMODE_KEY = 'mc.feedmode.v1';
+  const feedMode = () => (isNative() ? 'NATIVE' : ({ direct: 'DIRECT', proxy: 'VIA PROXY' })[LS.get(FEEDMODE_KEY, {})[String(S.rssUrl).trim()]] || 'AUTO');
+  /* Friendly names for known feeds (channel titles can be long SEO strings). */
+  function feedLabel(url, title) {
+    const h = String(url);
+    if (/cnbctv18\.com/.test(h)) return 'CNBC-TV18 MARKETS';
+    if (/business-standard\.com/.test(h)) return 'BUSINESS STANDARD';
+    if (/moneycontrol\.com/.test(h)) return 'MONEYCONTROL';
+    if (/economictimes/.test(h)) return 'ECONOMIC TIMES';
+    if (/livemint\.com/.test(h)) return 'MINT';
+    return title || 'HEADLINES';
+  }
   const KNOWN_ARTISTS = { 'anirudh ravichander': 480976476, 'sai abhyankkar': 1652280551 };
   /* One kural per local day, cycling through all 1330. */
   const kuralNo = () => { const d = new Date(); return (Math.floor(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 864e5) % 1330) + 1; };
@@ -470,9 +486,18 @@ _ 00000 00000 00000 00000 00000 00000 11111
     news: {
       every: 600e3, retry: 30e3, timeout: 15e3, text: true,
       on: () => S.pages.news && feedReady(),
-      url() {
-        const u = S.rssUrl.trim();
-        return S.rssDirect ? u : proxied(u);
+      /* Feeds that send CORS headers (e.g. CNBC-TV18) load directly; others go through your proxy.
+         The result is remembered per feed so a blocked direct attempt isn't repeated. */
+      async fetch() {
+        const u = S.rssUrl.trim(), modes = LS.get(FEEDMODE_KEY, {});
+        const via = (m) => fetchWithTimeout(m === 'proxy' ? proxied(u) : u, this.timeout, true);
+        if (isNative() || modes[u] === 'direct') return via('direct');
+        if (modes[u] === 'proxy' && S.rssProxy) return via('proxy');
+        try { const t = await via('direct'); modes[u] = 'direct'; LS.set(FEEDMODE_KEY, modes); return t; }
+        catch (e) {
+          if (!S.rssProxy || !(e && (e.name === 'TypeError' || /^HTTP 40[13]/.test(e.message)))) throw e;
+          const t = await via('proxy'); modes[u] = 'proxy'; LS.set(FEEDMODE_KEY, modes); return t;
+        }
       },
       parse(txt) {
         const doc = new DOMParser().parseFromString(txt, 'text/xml');
@@ -1616,16 +1641,18 @@ _ 00000 00000 00000 00000 00000 00000 11111
     const st = status('news', now);
     const ready = feedReady();
     const d = ST.news.data;
-    const src = d && d.title ? d.title : 'BUSINESS STANDARD · MARKETS';
+    const src = feedLabel(S.rssUrl, d && d.title);
     text(g, ready ? clip(src, Math.floor((w - L.pad * 2) / (6 * L.s2))) : 'RSS FEED', L.pad, L.pad, L.s2, PAL.accent);
     if (!ready) {
       statusLine(g, w, h, 'RSS', { text: 'NO FEED', color: PAL.warn });
-      centerMsg(g, w, h, 'NO FEED', isNative() ? 'SET A FEED URL IN SETTINGS (LONG-PRESS)' :
-        'THIS FEED BLOCKS BROWSER (CORS) READS. SET A CORS PROXY IN SETTINGS (LONG-PRESS), OR USE THE ANDROID APP BUILD.');
+      centerMsg(g, w, h, 'NO FEED', 'SET A FEED URL IN SETTINGS (LONG-PRESS)');
       return;
     }
-    statusLine(g, w, h, 'RSS · ' + (isNative() ? 'NATIVE' : S.rssDirect ? 'DIRECT' : 'VIA PROXY'), st);
-    if (!d) centerMsg(g, w, h, ST.news.fails ? 'NO DATA' : 'LOADING', ST.news.err);
+    statusLine(g, w, h, 'RSS · ' + feedMode(), st);
+    if (!d) {
+      const blocked = ST.news.err === 'NETWORK/CORS' && !S.rssProxy;
+      centerMsg(g, w, h, ST.news.fails ? 'NO DATA' : 'LOADING', blocked ? 'THIS FEED BLOCKS BROWSER READS: SET A CORS PROXY IN SETTINGS' : ST.news.err);
+    }
   }
   function dynNews(g, w, h, now, ts, dt) {
     if (!feedReady() || !ST.news.data) return;
@@ -2534,7 +2561,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
     settingsOpen = true;
     const f = sf.elements;
     f.relArtists.value = S.relArtists;
-    f.rssUrl.value = S.rssUrl; f.rssProxy.value = S.rssProxy; f.rssDirect.checked = !!S.rssDirect;
+    f.rssUrl.value = S.rssUrl; f.rssProxy.value = S.rssProxy;
     f.cdName.value = S.cdName; f.cdDate.value = S.cdDate; f.cdDate.min = '2026-01-01T00:00';
     f.palette.value = S.palette; f.dwell.value = S.dwell;
     f.notchMargin.value = S.notchMargin;
@@ -2553,7 +2580,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
     const f = sf.elements, old = S;
     const n = {
       relArtists: f.relArtists.value.trim(),
-      rssUrl: f.rssUrl.value.trim(), rssProxy: f.rssProxy.value.trim(), rssDirect: f.rssDirect.checked,
+      rssUrl: f.rssUrl.value.trim(), rssProxy: f.rssProxy.value.trim(), feedMigrated: true,
       cdName: f.cdName.value.trim() || 'COUNTDOWN', cdDate: f.cdDate.value,
       palette: f.palette.value === 'color' ? 'color' : 'vfd',
       dwell: Math.max(3, Math.min(120, parseInt(f.dwell.value, 10) || 6)),
@@ -2567,7 +2594,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
     for (const pr of FX_PAIRS) { const v = f['fx_' + pr.id].value.trim(); n.fxAlerts[pr.id] = parseFxRule(v) ? v : ''; }
     S = n; LS.set('mc.settings', S);
     if (old.relArtists !== n.relArtists) resetSource('rel');
-    if (old.rssUrl !== n.rssUrl || old.rssProxy !== n.rssProxy || old.rssDirect !== n.rssDirect) resetSource('news');
+    if (old.rssUrl !== n.rssUrl || old.rssProxy !== n.rssProxy) { resetSource('news'); LS.del(FEEDMODE_KEY); }
     PAL = PALETTES[S.palette];
     layers.clear(); skyBase = null; mmImg = null; newsCache.clear(); newsLayout = null; hdr.key = ftr.key = null;
     resize(); rebuildPages(); closeSettings(); schedTick(); remoteConnect(true);

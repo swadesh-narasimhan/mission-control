@@ -114,15 +114,14 @@ Long-press → Settings → **BACKUP LINK** shares a link with all settings, inc
 | Setting | Notes |
 |---|---|
 | New Releases artists | Comma-separated, up to 6. Names are matched in the iTunes catalogue once and cached. |
-| RSS feed URL | Defaults to `https://www.business-standard.com/rss/markets-106.rss` (checked 16 Nov 2026: valid RSS 2.0 with 35 items). |
-| CORS proxy | Required in the browser for that feed (see below). `{url}` is replaced by the encoded feed URL; otherwise the encoded URL is appended. |
-| "Feed allows CORS" | Tick this only for a feed that sends `Access-Control-Allow-Origin`. |
+| RSS feed URL | Defaults to CNBC-TV18 markets, `https://www.cnbctv18.com/commonfeeds/v1/cne/rss/market.xml` (since v1.6; sends `Access-Control-Allow-Origin: *`, so it loads directly). The app tries a feed directly first and falls back to the CORS proxy if the browser blocks it, remembering the result per feed. |
+| CORS proxy | Used for feeds that block browser reads (e.g. Business Standard) and for live flights. `{url}` is replaced by the encoded URL; otherwise the encoded URL is appended. |
 | Countdown | Event name (default `TRAIN TRIP`) and date/time. Until a date is set the page shows `DATE NOT SET`. |
 | Palette | `VFD TEAL` (mono) or `FULL COLOUR` (amber labels, red quakes, green/red FX moves, bus crowding green/amber/red). |
 | FX alerts | Per pair: `>=95`, `<=93.5`, `>`, `<`; a bare number means `>=`. |
 | Seconds per page, enabled pages | Disabled pages also stop fetching. |
 
-### The Business Standard feed and CORS
+### Feeds that block browser reads (e.g. Business Standard)
 
 The feed URL works: it returns HTTP 200 and valid RSS. But it sends **no `Access-Control-Allow-Origin` header**, so Chrome blocks a web page from reading it (confirmed from a browser context: `TypeError: Failed to fetch`). Until you set a proxy, the Headlines page shows **NO FEED**. You have two options:
 

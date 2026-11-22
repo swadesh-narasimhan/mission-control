@@ -30,8 +30,7 @@
       <legend>HEADLINES (RSS)</legend>
       <label>FEED URL <input name="rssUrl" type="url" spellcheck="false" autocapitalize="off"></label>
       <label>CORS PROXY <input name="rssProxy" spellcheck="false" autocapitalize="off" placeholder="https://your-proxy.example/?url={url}"></label>
-      <label class="check"><input name="rssDirect" type="checkbox"> FEED ALLOWS CORS - FETCH DIRECTLY</label>
-      <p class="note">Business Standard sends no CORS header, so a browser cannot read it directly. Use a proxy you control ({url} is replaced by the encoded feed URL; otherwise it is appended). The same proxy fetches live flight positions for the SKY page. The Android app build fetches natively and needs no proxy.</p>
+      <p class="note">Default: CNBC-TV18 markets, which browsers can read directly. Feeds that block browser reads (e.g. Business Standard) automatically go through the CORS proxy ({url} is replaced by the encoded feed URL; otherwise it is appended). The same proxy fetches live flight positions for the SKY page.</p>
     </fieldset>
 
     <fieldset>
