@@ -5,7 +5,7 @@
  * when nothing moved. */
 'use strict';
 (function () {
-  const APP_VERSION = '1.6.0';
+  const APP_VERSION = '1.6.1';
   const SLIDE_MS = 520;
   const LONGPRESS_MS = 650;
 
@@ -358,6 +358,11 @@ _ 00000 00000 00000 00000 00000 00000 11111
   /* ============================================================ data layer */
   const CK = 'mc.cache.v1.';
   const FEEDMODE_KEY = 'mc.feedmode.v1';
+  const FEEDS = {
+    cnbc: 'https://www.cnbctv18.com/commonfeeds/v1/cne/rss/market.xml',          // loads directly
+    bs: 'https://www.business-standard.com/rss/markets-106.rss'                   // needs the CORS proxy
+  };
+  const feedPreset = (u) => Object.keys(FEEDS).find((k) => FEEDS[k] === String(u).trim()) || 'custom';
   const feedMode = () => (isNative() ? 'NATIVE' : ({ direct: 'DIRECT', proxy: 'VIA PROXY' })[LS.get(FEEDMODE_KEY, {})[String(S.rssUrl).trim()]] || 'AUTO');
   /* Friendly names for known feeds (channel titles can be long SEO strings). */
   function feedLabel(url, title) {
@@ -2473,6 +2478,11 @@ _ 00000 00000 00000 00000 00000 00000 11111
     goTo(idx);
     holdUntil = Date.now() + 60e3; // stay on the requested page for a minute
   }
+  function setFeed(url) {
+    if (String(S.rssUrl).trim() === url) return;
+    S.rssUrl = url; S.feedMigrated = true; LS.set('mc.settings', S);
+    resetSource('news'); newsLayout = null; newsScroll = 0; forceDraw = true; schedTick();
+  }
   function setPalette(v) {
     S.palette = v; LS.set('mc.settings', S); PAL = PALETTES[v];
     layers.clear(); skyBase = null; mmImg = null; newsCache.clear(); newsLayout = null; hdr.key = ftr.key = null;
@@ -2489,6 +2499,11 @@ _ 00000 00000 00000 00000 00000 00000 11111
     if (low === 'on' || low === 'wake') return exitSleep();
     if (low === 'toggle') return sleeping ? exitSleep() : enterSleep();
     if (word === 'msg' || word === 'say' || word === 'message') { if (rest) showBanner(rest); return; }
+    if ((word === 'feed' || word === 'news') && rest) { // switch headline source, then show it
+      const k = /^(bs|business)/i.test(rest) ? 'bs' : /^cnbc/i.test(rest) ? 'cnbc' : '';
+      if (k) { setFeed(FEEDS[k]); if (sleeping) exitSleep(); showPage('news'); }
+      return;
+    }
     if (low === 'clear' || low === 'dismiss') { banner = null; forceDraw = true; return; }
     if (word === 'play') { const n = parseInt(rest, 10); playRelease(!isNaN(n) && n > 0 ? n - 1 : 0); return; }
     if (low === 'stop') { stopPreview(); return; }
@@ -2561,7 +2576,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
     settingsOpen = true;
     const f = sf.elements;
     f.relArtists.value = S.relArtists;
-    f.rssUrl.value = S.rssUrl; f.rssProxy.value = S.rssProxy;
+    f.rssUrl.value = S.rssUrl; f.rssProxy.value = S.rssProxy; f.rssPreset.value = feedPreset(S.rssUrl);
     f.cdName.value = S.cdName; f.cdDate.value = S.cdDate; f.cdDate.min = '2026-01-01T00:00';
     f.palette.value = S.palette; f.dwell.value = S.dwell;
     f.notchMargin.value = S.notchMargin;
@@ -2605,6 +2620,8 @@ _ 00000 00000 00000 00000 00000 00000 11111
       'Sleep:  ' + NTFY + t + '/publish?message=off\nWake:   ' + NTFY + t + '/publish?message=on';
   }
   sf.elements.remoteTopic.addEventListener('input', showRemoteUrls);
+  sf.elements.rssPreset.addEventListener('change', () => { const k = sf.elements.rssPreset.value; if (FEEDS[k]) sf.elements.rssUrl.value = FEEDS[k]; else sf.elements.rssUrl.focus(); });
+  sf.elements.rssUrl.addEventListener('input', () => { sf.elements.rssPreset.value = feedPreset(sf.elements.rssUrl.value); });
   document.getElementById('sSleep').addEventListener('click', () => { closeSettings(); enterSleep(); });
   document.getElementById('sShare').addEventListener('click', async () => {
     showRemoteUrls();

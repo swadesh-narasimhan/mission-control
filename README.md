@@ -102,6 +102,7 @@ Anyone who knows the topic can sleep your screen, so don't share it. If you need
 | `next` / `prev` / `pause` / `resume` | Page control (`resume` restarts rotation). |
 | `play` / `play 2` / `stop` | Opens New Releases and previews the newest (or 2nd…) release / stops it. Chrome only allows sound after you've tapped the ticker at least once since it was opened (the fullscreen tap counts); otherwise the deck shows `TAP TO PLAY`. |
 | `colour` / `vfd` | Switch palette. |
+| `feed cnbc` / `feed bs` | Switch the headline source (also in Settings → HEADLINES → SOURCE) and show it. |
 
 *Message Shortcut:* **Ask for Input** (Text) → **URL Encode** → **Text** `https://ntfy.sh/<topic>/publish?message=msg%20` followed by the *Encoded Text* variable → **Get Contents of URL**. "Hey Siri, desk message" then lets you dictate the text.
 

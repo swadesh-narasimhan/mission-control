@@ -28,6 +28,13 @@
 
     <fieldset>
       <legend>HEADLINES (RSS)</legend>
+      <label>SOURCE
+        <select name="rssPreset">
+          <option value="cnbc">CNBC-TV18 MARKETS</option>
+          <option value="bs">BUSINESS STANDARD MARKETS (USES PROXY)</option>
+          <option value="custom">CUSTOM URL</option>
+        </select>
+      </label>
       <label>FEED URL <input name="rssUrl" type="url" spellcheck="false" autocapitalize="off"></label>
       <label>CORS PROXY <input name="rssProxy" spellcheck="false" autocapitalize="off" placeholder="https://your-proxy.example/?url={url}"></label>
       <p class="note">Default: CNBC-TV18 markets, which browsers can read directly. Feeds that block browser reads (e.g. Business Standard) automatically go through the CORS proxy ({url} is replaced by the encoded feed URL; otherwise it is appended). The same proxy fetches live flight positions for the SKY page.</p>
@@ -60,7 +67,7 @@
       <pre id="remoteUrls" class="urls"></pre>
       <p class="note">"off" blanks the display and lets the phone's screen timeout switch it off. Turn OFF Developer options &rarr; Stay awake, and set Display &rarr; Screen timeout to 15&ndash;30 s. Wake with double-tap / power key (or "on" while the screen is still lit). Anyone who knows the topic can sleep the screen, so keep it private.</p>
       <div class="row"><button type="button" id="sShare">SHARE URLS</button><button type="button" id="sSleep" class="ghost">SLEEP NOW</button></div>
-      <p class="note">Other messages you can send to the same topic: <b>msg your text</b> (banner for 2 min), <b>clear</b>, <b>next</b>, <b>prev</b>, <b>pause</b>, <b>resume</b>, <b>play</b> / <b>play 2</b> (preview the newest / 2nd release), <b>stop</b>, a page name (<b>bus</b>, <b>sky</b>, <b>weather</b>, <b>fx</b>, <b>clock</b>, <b>news</b>, <b>releases</b>, <b>kural</b>, <b>countdown</b>; held for 1 min), <b>colour</b>, <b>vfd</b>.</p>
+      <p class="note">Other messages you can send to the same topic: <b>msg your text</b> (banner for 2 min), <b>clear</b>, <b>next</b>, <b>prev</b>, <b>pause</b>, <b>resume</b>, <b>play</b> / <b>play 2</b> (preview the newest / 2nd release), <b>stop</b>, a page name (<b>bus</b>, <b>sky</b>, <b>weather</b>, <b>fx</b>, <b>clock</b>, <b>news</b>, <b>releases</b>, <b>kural</b>, <b>countdown</b>; held for 1 min), <b>colour</b>, <b>vfd</b>, <b>feed cnbc</b> / <b>feed bs</b> (switch headline source).</p>
     </fieldset>
 
     <fieldset>
