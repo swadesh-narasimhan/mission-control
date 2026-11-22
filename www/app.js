@@ -5,7 +5,7 @@
  * when nothing moved. */
 'use strict';
 (function () {
-  const APP_VERSION = '1.5.0';
+  const APP_VERSION = '1.5.1';
   const SLIDE_MS = 520;
   const LONGPRESS_MS = 650;
 
@@ -929,8 +929,10 @@ _ 00000 00000 00000 00000 00000 00000 11111
      SIN<->BLR flights are the headline; every other Singapore<->India flight is shown quietly.
      Only real positions are shown; a flight out of receiver range keeps its last fix, marked with its time. */
   const SKY_CARRIERS = { SIA: 'SQ', TGW: 'TR', IGO: '6E', AIC: 'AI', AXB: 'IX', AKJ: 'QP', VTI: 'UK', MAS: 'MH' };
-  // Receiver circles (250 nm) around Singapore and the main Indian airports.
-  const SKY_WATCH = [[1.36, 103.99], [13.2, 77.71], [12.99, 80.17], [17.24, 78.43], [19.09, 72.87], [28.56, 77.1], [22.65, 88.45]];
+  // Receiver circles (250 nm) around Singapore and the Indian airports with Singapore flights:
+  // SIN, BLR, MAA, HYD, BOM, DEL, CCU, TRV (Trivandrum), VTZ (Visakhapatnam). Trichy, Madurai, Coimbatore,
+  // Kochi, Goa, Ahmedabad and Lucknow fall inside these.
+  const SKY_WATCH = [[1.36, 103.99], [13.2, 77.71], [12.99, 80.17], [17.24, 78.43], [19.09, 72.87], [28.56, 77.1], [22.65, 88.45], [8.48, 76.92], [17.72, 83.22]];
   const ROUTE_KEY = 'mc.routes.v2';
   const routeCache = LS.get(ROUTE_KEY, {});
   async function routeOf(cs) { // 'SIN-MAA' style for Singapore<->India, '' otherwise
@@ -960,12 +962,17 @@ _ 00000 00000 00000 00000 00000 00000 11111
       seen: Date.now() - ((a.seen_pos != null ? a.seen_pos : a.seen) || 0) * 1000
     };
   }
-  /* Which callsigns are worth a route lookup, most likely first (IndiGo's international flights are 6E1xxx). */
-  function lookupRank(cs) {
+  /* Which callsigns are worth a route lookup, most likely first. A Singapore carrier near an Indian airport,
+     or an Indian carrier near Singapore, is almost certainly flying SIN<->India; Singapore Airlines near
+     Changi could be going anywhere, so it waits. IndiGo's international flights are 6E1xxx. 9 = skip. */
+  function lookupRank(cs, nearSin, nearIndia) {
     const p = cs.slice(0, 3), n = parseInt(cs.slice(3), 10);
-    if (p === 'SIA' || p === 'TGW') return 0;
-    if (p === 'IGO') return n >= 1000 && n < 2000 ? 1 : 9;
-    return 2;
+    const sgCarrier = p === 'SIA' || p === 'TGW', inCarrier = !sgCarrier && p !== 'MAS';
+    if (p === 'IGO' && !(n >= 1000 && n < 2000)) return 9;
+    if (sgCarrier && nearIndia) return 0;
+    if (inCarrier && nearSin) return 0;
+    if (p === 'MAS') return 3;
+    return sgCarrier ? 2 : 1;
   }
   /* adsb.lol throttles bursts (simultaneous requests get HTTP 429 and a cool-down), so its calls are paced ~1.1 s apart. */
   let adsbAt = 0, adsbBlocked = false;
@@ -980,15 +987,19 @@ _ 00000 00000 00000 00000 00000 00000 11111
   async function skyFetch() {
     const prev = (ST.sky.data && ST.sky.data.flights) || [];
     adsbBlocked = false;
-    const seen = new Map();
+    const seen = new Map(), where = new Map(); // callsign -> { sin, india } circles it was seen in
     let ok = 0, firstErr = null;
-    for (const [la, lo] of SKY_WATCH) {
+    for (const [ci, [la, lo]] of SKY_WATCH.entries()) {
       try {
         const j = await adsb(`https://api.adsb.lol/v2/point/${la}/${lo}/250`);
         ok++;
         for (const a of (j && j.ac) || []) {
           const cs = String(a.flight || '').trim();
-          if (cs && a.lat != null && SKY_CARRIERS[cs.slice(0, 3)]) seen.set(cs, a);
+          if (!cs || a.lat == null || !SKY_CARRIERS[cs.slice(0, 3)]) continue;
+          seen.set(cs, a);
+          const wh = where.get(cs) || { sin: false, india: false };
+          if (ci === 0) wh.sin = true; else wh.india = true;
+          where.set(cs, wh);
         }
       } catch (e) { firstErr = firstErr || e; if (adsbBlocked) break; }
     }
@@ -998,10 +1009,10 @@ _ 00000 00000 00000 00000 00000 00000 11111
     for (const [cs, a] of seen) {
       const c = routeCache[cs];
       if (fresh(c)) { if (c.r) flights.set(cs, flightFix(cs, c.r, a)); }
-      else if (lookupRank(cs) < 9) todo.push(cs);
+      else { const wh = where.get(cs); const rk = lookupRank(cs, wh.sin, wh.india); if (rk < 9) todo.push([rk, cs]); }
     }
-    todo.sort((x, y) => lookupRank(x) - lookupRank(y));
-    for (const cs of todo.slice(0, 10)) { // be gentle with adsbdb; the rest get checked next minute
+    todo.sort((x, y) => x[0] - y[0]);
+    for (const [, cs] of todo.slice(0, 20)) { // be gentle with adsbdb; the rest get checked next minute
       let r = '';
       try { r = await routeOf(cs); } catch (e) { continue; }
       if (r) flights.set(cs, flightFix(cs, r, seen.get(cs)));

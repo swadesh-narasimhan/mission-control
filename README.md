@@ -137,7 +137,7 @@ The feed URL works: it returns HTTP 200 and valid RSS. But it sends **no `Access
 
 | API | Browser fetch | Notes |
 |---|---|---|
-| adsb.lol `/v2/point`, `/v2/callsign` | ❌ no CORS | Needs the proxy. Throttles bursts (HTTP 429 + cool-down), so the app paces calls ~1.1 s apart: 7 receiver circles (SIN, BLR, MAA, HYD, BOM, DEL, CCU) per minute. Tested 22 Nov: ~50 aircraft within 250 nm of SIN and of BLR, **0** over the middle of the Bay of Bengal (no receivers). |
+| adsb.lol `/v2/point`, `/v2/callsign` | ❌ no CORS | Needs the proxy. Throttles bursts (HTTP 429 + cool-down), so the app paces calls ~1.1 s apart: 9 receiver circles (SIN, BLR, MAA, HYD, BOM, DEL, CCU, TRV, VTZ) per minute; Trichy, Madurai, Coimbatore, Kochi, Goa, Ahmedabad and Lucknow fall inside them. Tested 22 Nov: ~50 aircraft within 250 nm of SIN and of BLR, **0** over the middle of the Bay of Bengal (no receivers). |
 | adsbdb `/v0/callsign` | ✅ CORS `*` | Callsign → route (e.g. SIA502 = SIN→BLR, IGO1005 = BLR→SIN). Lookups are cached for 3 days. |
 | USGS `4.5_day.geojson` | ✅ CORS `*` | |
 | Frankfurter `api.frankfurter.dev/v1` | ✅ CORS `*` | The old `api.frankfurter.app` now 301-redirects here. |
