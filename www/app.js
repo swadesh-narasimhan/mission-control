@@ -5,7 +5,7 @@
  * when nothing moved. */
 'use strict';
 (function () {
-  const APP_VERSION = '1.4.0';
+  const APP_VERSION = '1.5.0';
   const SLIDE_MS = 520;
   const LONGPRESS_MS = 650;
 
@@ -849,7 +849,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
     sc.onload = () => { REG = window.MC_REGION || null; skyBase = null; forceDraw = true; };
     document.head.appendChild(sc);
   }
-  const SKY_FIT = { w: 70, e: 108, s: -5, n: 26 }; // always visible: India, Sri Lanka, the Bay of Bengal, Malaysia, Singapore
+  const SKY_FIT = { w: 70, e: 108, s: -5, n: 30 }; // always visible: India up to Delhi, Sri Lanka, the Bay of Bengal, Malaysia, Singapore
   function skyGeom(w, h) {
     const pad = L.pad, mx = pad, my = Math.round(pad / 2);
     const mw = w - pad * 2, full = h - (LH * L.s1 * 2 + pad) - my - Math.round(pad / 2);
@@ -926,74 +926,110 @@ _ 00000 00000 00000 00000 00000 00000 11111
   }
 
   /* Flights: live positions from adsb.lol (via your CORS proxy), routes from adsbdb.
+     SIN<->BLR flights are the headline; every other Singapore<->India flight is shown quietly.
      Only real positions are shown; a flight out of receiver range keeps its last fix, marked with its time. */
   const SKY_CARRIERS = { SIA: 'SQ', TGW: 'TR', IGO: '6E', AIC: 'AI', AXB: 'IX', AKJ: 'QP', VTI: 'UK', MAS: 'MH' };
-  const ROUTE_KEY = 'mc.routes.v1';
+  // Receiver circles (250 nm) around Singapore and the main Indian airports.
+  const SKY_WATCH = [[1.36, 103.99], [13.2, 77.71], [12.99, 80.17], [17.24, 78.43], [19.09, 72.87], [28.56, 77.1], [22.65, 88.45]];
+  const ROUTE_KEY = 'mc.routes.v2';
   const routeCache = LS.get(ROUTE_KEY, {});
-  async function routeOf(cs) {
+  async function routeOf(cs) { // 'SIN-MAA' style for Singapore<->India, '' otherwise
     let j = null;
     try { j = await fetchWithTimeout('https://api.adsbdb.com/v0/callsign/' + encodeURIComponent(cs), 10e3); }
     catch (e) { if (!/^HTTP 404/.test(e.message)) throw e; }
     const fr = j && j.response && j.response.flightroute;
-    const o = fr && fr.origin && fr.origin.iata_code, d = fr && fr.destination && fr.destination.iata_code;
-    const r = (o === 'SIN' && d === 'BLR') || (o === 'BLR' && d === 'SIN') ? o + '-' + d : '';
+    const o = fr && fr.origin, d = fr && fr.destination;
+    let r = '';
+    if (o && d && ((o.iata_code === 'SIN' && d.country_iso_name === 'IN') || (d.iata_code === 'SIN' && o.country_iso_name === 'IN'))) r = o.iata_code + '-' + d.iata_code;
     routeCache[cs] = { r, t: Date.now() };
     const ks = Object.keys(routeCache);
-    if (ks.length > 400) for (const k2 of ks.slice(0, ks.length - 400)) delete routeCache[k2];
+    if (ks.length > 600) for (const k2 of ks.slice(0, ks.length - 600)) delete routeCache[k2];
     LS.set(ROUTE_KEY, routeCache);
     return r;
   }
   function flightFix(cs, r, a) {
     const alt = typeof a.alt_baro === 'number' ? a.alt_baro : 0, ground = a.alt_baro === 'ground' || alt < 300;
-    const dest = HOMES.find((x) => x.name === r.slice(4));
+    const [o, d] = r.split('-');
+    const al = SKY_CARRIERS[cs.slice(0, 3)] || cs.slice(0, 3);
+    const dh = HOMES.find((x) => x.name === d);
     return {
-      cs, fn: (SKY_CARRIERS[cs.slice(0, 3)] || cs.slice(0, 3)) + cs.slice(3), r,
+      cs, al, fn: al + cs.slice(3), r, city: o === 'SIN' ? d : o, bl: (o === 'BLR' || d === 'BLR'),
       lat: a.lat, lon: a.lon, trk: a.track != null ? a.track : (a.true_heading || 0), alt, ground,
-      landed: !!(ground && dest && Math.hypot(a.lat - dest.lat, a.lon - dest.lon) < 0.3),
+      // landed: on the ground near its destination (destination coords known for SIN/BLR; others: on the ground and not near SIN)
+      landed: !!(ground && (dh ? Math.hypot(a.lat - dh.lat, a.lon - dh.lon) < 0.3 : d !== 'SIN' && Math.hypot(a.lat - HOMES[0].lat, a.lon - HOMES[0].lon) > 1)),
       seen: Date.now() - ((a.seen_pos != null ? a.seen_pos : a.seen) || 0) * 1000
     };
   }
+  /* Which callsigns are worth a route lookup, most likely first (IndiGo's international flights are 6E1xxx). */
+  function lookupRank(cs) {
+    const p = cs.slice(0, 3), n = parseInt(cs.slice(3), 10);
+    if (p === 'SIA' || p === 'TGW') return 0;
+    if (p === 'IGO') return n >= 1000 && n < 2000 ? 1 : 9;
+    return 2;
+  }
+  /* adsb.lol throttles bursts (simultaneous requests get HTTP 429 and a cool-down), so its calls are paced ~1.1 s apart. */
+  let adsbAt = 0, adsbBlocked = false;
+  async function adsb(url) {
+    if (adsbBlocked) throw new Error('HTTP 429');
+    const wait = adsbAt + 1100 - Date.now();
+    if (wait > 0) await new Promise((ok) => setTimeout(ok, wait));
+    adsbAt = Date.now();
+    try { return await fetchWithTimeout(proxied(url), 15e3); }
+    catch (e) { if (/^HTTP 429/.test(e.message)) adsbBlocked = true; throw e; } // stop for this cycle
+  }
   async function skyFetch() {
     const prev = (ST.sky.data && ST.sky.data.flights) || [];
+    adsbBlocked = false;
     const seen = new Map();
-    for (const hm of HOMES) { // everything within 250 nm of either airport
-      const j = await fetchWithTimeout(proxied(`https://api.adsb.lol/v2/point/${hm.lat.toFixed(2)}/${hm.lon.toFixed(2)}/250`), 15e3);
-      for (const a of (j && j.ac) || []) {
-        const cs = String(a.flight || '').trim();
-        if (cs && a.lat != null && SKY_CARRIERS[cs.slice(0, 3)]) seen.set(cs, a);
-      }
+    let ok = 0, firstErr = null;
+    for (const [la, lo] of SKY_WATCH) {
+      try {
+        const j = await adsb(`https://api.adsb.lol/v2/point/${la}/${lo}/250`);
+        ok++;
+        for (const a of (j && j.ac) || []) {
+          const cs = String(a.flight || '').trim();
+          if (cs && a.lat != null && SKY_CARRIERS[cs.slice(0, 3)]) seen.set(cs, a);
+        }
+      } catch (e) { firstErr = firstErr || e; if (adsbBlocked) break; }
     }
-    const flights = new Map();
-    let lookups = 0;
+    if (!ok) throw firstErr;
+    const flights = new Map(), fresh = (c) => c && Date.now() - c.t < 3 * 864e5;
+    const todo = [];
     for (const [cs, a] of seen) {
       const c = routeCache[cs];
-      let r = c && Date.now() - c.t < 3 * 864e5 ? c.r : null;
-      if (r === null) {
-        if (lookups >= 8) continue; // be gentle with adsbdb; the rest get checked next minute
-        lookups++;
-        try { r = await routeOf(cs); } catch (e) { continue; }
-      }
-      if (r) flights.set(cs, flightFix(cs, r, a));
+      if (fresh(c)) { if (c.r) flights.set(cs, flightFix(cs, c.r, a)); }
+      else if (lookupRank(cs) < 9) todo.push(cs);
     }
-    for (const f of prev) { // keep following flights that left both circles (the Bay of Bengal has no coverage)
-      if (flights.has(f.cs) || f.landed || Date.now() - f.seen > 5 * 3600e3) continue;
+    todo.sort((x, y) => lookupRank(x) - lookupRank(y));
+    for (const cs of todo.slice(0, 10)) { // be gentle with adsbdb; the rest get checked next minute
+      let r = '';
+      try { r = await routeOf(cs); } catch (e) { continue; }
+      if (r) flights.set(cs, flightFix(cs, r, seen.get(cs)));
+    }
+    // keep following flights that left every circle (no coverage over the Bay of Bengal): BLR first, a few others
+    const lost = prev.filter((f) => !flights.has(f.cs) && !f.landed && Date.now() - f.seen < 5 * 3600e3)
+      .sort((x, y) => (y.bl - x.bl) || (y.seen - x.seen));
+    for (const [i, f] of lost.entries()) {
       let a = null;
-      try { const j = await fetchWithTimeout(proxied('https://api.adsb.lol/v2/callsign/' + encodeURIComponent(f.cs)), 12e3); a = ((j && j.ac) || [])[0] || null; }
-      catch (e) { a = null; }
+      if (f.bl || i < 4) {
+        try { const j = await adsb('https://api.adsb.lol/v2/callsign/' + encodeURIComponent(f.cs)); a = ((j && j.ac) || [])[0] || null; }
+        catch (e) { a = null; }
+      }
       flights.set(f.cs, a && a.lat != null ? flightFix(f.cs, f.r, a) : f);
     }
     return { flights: [...flights.values()] };
   }
-  const skyFlights = () => ((ST.sky.data && ST.sky.data.flights) || []).filter((f) => !f.landed);
+  const skyFlights = () => ((ST.sky.data && ST.sky.data.flights) || []).filter((f) => !f.landed && f.r);
+  const isBlr = (f) => (f.bl != null ? f.bl : /BLR/.test(f.r));
   function drawSky(g, w, h, now) {
     const G = skyGeom(w, h);
     const qd = ST.quakes.data, quakes = qd ? qd.list.filter((q) => now - q.t <= 864e5 && inSky(G, q.lon, q.lat)) : [];
-    const fl = skyFlights();
+    const fl = skyFlights(), blr = fl.filter(isBlr), others = fl.filter((f) => !isBlr(f));
     let left, st;
     if (!skyReady()) { left = 'FLIGHTS NEED THE CORS PROXY (SETTINGS)'; st = { text: 'NO PROXY', color: PAL.warn }; }
     else {
       st = status('sky', now);
-      left = (ST.sky.data ? (fl.length ? fl.length + ' SIN-BLR FLIGHT' + (fl.length > 1 ? 'S' : '') : 'NO SIN-BLR FLIGHTS') : 'FLIGHTS') +
+      left = (ST.sky.data ? blr.length + ' SIN-BLR · ' + others.length + ' SIN-INDIA' : 'FLIGHTS') +
         ' · ' + quakes.length + ' QUAKE' + (quakes.length === 1 ? '' : 'S');
     }
     statusLine(g, w, h, left, st);
@@ -1014,16 +1050,17 @@ _ 00000 00000 00000 00000 00000 00000 11111
       if (hm.side > 0) text(g, hm.name, x + lp * 3, y + lp, lp, PAL.home);
       else text(g, hm.name, x - lp * 3, y - th(lp) - lp, lp, PAL.home, 'right');
     }
-    if (L.portrait && skyReady()) { // airport-style board: flight · route · altitude or last fix
+    if (L.portrait && skyReady()) { // airport-style board for SIN<->BLR; other India flights summarised in one line
       const bp = L.s2, x = L.pad, bw = w - L.pad * 2;
       let y = G.by;
       dotLine(g, x, y - L.pad / 2, bw, Math.max(1, L.s1 - 1), PAL.dim);
       text(g, 'SIN ▶ BLR  ·  BLR ▶ SIN', x, y, L.s1, PAL.accent); y += LH * L.s1 * 1.4;
-      const list = fl.slice().sort((a, b) => (now - a.seen > 5 * 60e3) - (now - b.seen > 5 * 60e3) || a.fn.localeCompare(b.fn));
+      const list = blr.slice().sort((a, b) => (now - a.seen > 5 * 60e3) - (now - b.seen > 5 * 60e3) || a.fn.localeCompare(b.fn));
       if (!ST.sky.data) text(g, ST.sky.fails ? 'NO DATA' : 'LOADING', x, y, bp, PAL.dim);
-      else if (!list.length) text(g, 'NO FLIGHTS IN RANGE', x, y, bp, PAL.dim);
+      else if (!list.length) { text(g, 'NO FLIGHTS IN RANGE', x, y, bp, PAL.dim); y += LH * bp; }
+      const reserve = others.length ? LH * L.s1 * 1.6 : 0;
       for (const f of list) {
-        if (y + LH * bp + th(L.s1) > G.bb) break;
+        if (y + LH * bp + th(L.s1) + reserve > G.bb) break;
         const old = now - f.seen > 5 * 60e3;
         const stat = old ? 'NO SIGNAL · LAST SEEN ' + hhmm(f.seen) : f.ground ? 'ON GROUND' : 'FL' + pad2(Math.round(f.alt / 1000)) + '0 · LIVE';
         text(g, f.fn, x, y, bp, old ? PAL.dim : PAL.iss);
@@ -1031,6 +1068,10 @@ _ 00000 00000 00000 00000 00000 00000 11111
         y += LH * bp;
         text(g, stat, x, y, L.s1, old ? PAL.dim : PAL.main);
         y += LH * L.s1 * 1.3;
+      }
+      if (others.length) {
+        const sum = '+' + others.length + ' SIN-INDIA: ' + others.map((f) => f.al + ' ' + f.city).join(' · ');
+        fitText(g, sum, x, Math.min(y + L.s1, G.bb - th(L.s1)), bw, L.s1, PAL.dim);
       }
     }
   }
@@ -1056,22 +1097,52 @@ _ 00000 00000 00000 00000 00000 00000 11111
       g.strokeStyle = PAL.home; g.lineWidth = Math.max(1, u * 0.35); g.globalAlpha = blink ? 1 : 0.5;
       g.strokeRect(x - u * 1.2, y - u * 1.2, u * 2.4, u * 2.4); g.globalAlpha = 1;
     }
-    const lp = Math.max(2, L.s1 - 1);
-    for (const f of skyFlights()) {
-      if (!inSky(G, f.lon, f.lat)) continue;
-      const [x, y] = skyXY(G, f.lon, f.lat);
-      const old = now - f.seen > 5 * 60e3;          // out of receiver range: last real fix, dimmed
-      const a = (f.trk - 90) * RAD, r = u * 2.2;
-      if (!old) { g.strokeStyle = PAL.iss; g.lineWidth = Math.max(1, u * 0.4); g.globalAlpha = 1 - pulse; g.beginPath(); g.arc(x, y, u * (1.5 + pulse * 4), 0, Math.PI * 2); g.stroke(); }
-      g.globalAlpha = old ? 0.45 : 1;
-      const sp = sprite(PAL.iss, Math.max(3, Math.round(u * 1.3)), 'glow');
-      g.globalCompositeOperation = 'lighter'; g.drawImage(sp, x - sp.width / 2, y - sp.height / 2); g.globalCompositeOperation = 'source-over';
-      g.fillStyle = PAL.iss; g.beginPath(); // heading arrow
+    const arrow = (x, y, trk, r, col) => {
+      const a = (trk - 90) * RAD;
+      g.fillStyle = col; g.beginPath();
       g.moveTo(x + Math.cos(a) * r * 1.6, y + Math.sin(a) * r * 1.6);
       g.lineTo(x + Math.cos(a + 2.6) * r, y + Math.sin(a + 2.6) * r);
       g.lineTo(x + Math.cos(a - 2.6) * r, y + Math.sin(a - 2.6) * r);
       g.closePath(); g.fill();
-      const im = labelImg(old ? f.fn + ' ' + hhmm(f.seen) : f.fn, lp, PAL.iss);
+    };
+    const lp = Math.max(2, L.s1 - 1), lpo = Math.max(2, L.s1 - 2);
+    const fl = skyFlights().filter((f) => inSky(G, f.lon, f.lat));
+    // BLR labels get first claim on space; quieter labels move or drop out rather than overlap
+    const placed = [];
+    const hit = (r) => placed.some((b) => r[0] < b[0] + b[2] && r[0] + r[2] > b[0] && r[1] < b[1] + b[3] && r[1] + r[3] > b[1]);
+    const blrLabel = (f) => labelImg(now - f.seen > 5 * 60e3 ? f.fn + ' ' + hhmm(f.seen) : f.fn, lp, PAL.iss);
+    for (const f of fl) {
+      if (!isBlr(f)) continue;
+      const [x, y] = skyXY(G, f.lon, f.lat), im = blrLabel(f);
+      placed.push([x - u * 2.5, y - u * 2.5, u * 5, u * 5], [x + u * 2.5, y - im.height / 2, im.width, im.height]);
+    }
+    // other Singapore<->India flights: small, dim, no pulse; label = airline + Indian city
+    for (const f of fl) {
+      if (isBlr(f)) continue;
+      const [x, y] = skyXY(G, f.lon, f.lat), old = now - f.seen > 5 * 60e3;
+      g.globalAlpha = old ? 0.3 : 0.6;
+      const sp = sprite(PAL.main, Math.max(2, Math.round(u * 0.7)), 'glow');
+      g.globalCompositeOperation = 'lighter'; g.drawImage(sp, x - sp.width / 2, y - sp.height / 2); g.globalCompositeOperation = 'source-over';
+      arrow(x, y, f.trk, u * 1.2, PAL.main);
+      const im = labelImg(f.al + ' ' + f.city, lpo, PAL.dim);
+      for (const [lx, ly] of [[x + u * 1.6, y - im.height / 2], [x - u * 1.6 - im.width, y - im.height / 2], [x - im.width / 2, y - u * 1.4 - im.height], [x - im.width / 2, y + u * 1.4]]) {
+        const r = [lx, ly, im.width, im.height];
+        if (hit(r)) continue;
+        g.drawImage(im, Math.round(lx), Math.round(ly)); placed.push(r); break;
+      }
+      g.globalAlpha = 1;
+    }
+    // SIN<->BLR: bright, pulsing, flight number
+    for (const f of fl) {
+      if (!isBlr(f)) continue;
+      const [x, y] = skyXY(G, f.lon, f.lat);
+      const old = now - f.seen > 5 * 60e3; // out of receiver range: last real fix, dimmed
+      if (!old) { g.strokeStyle = PAL.iss; g.lineWidth = Math.max(1, u * 0.4); g.globalAlpha = 1 - pulse; g.beginPath(); g.arc(x, y, u * (1.5 + pulse * 4), 0, Math.PI * 2); g.stroke(); }
+      g.globalAlpha = old ? 0.45 : 1;
+      const sp = sprite(PAL.iss, Math.max(3, Math.round(u * 1.3)), 'glow');
+      g.globalCompositeOperation = 'lighter'; g.drawImage(sp, x - sp.width / 2, y - sp.height / 2); g.globalCompositeOperation = 'source-over';
+      arrow(x, y, f.trk, u * 2.2, PAL.iss);
+      const im = blrLabel(f);
       g.drawImage(im, Math.round(x + u * 2.5), Math.round(y - im.height / 2));
       g.globalAlpha = 1;
     }

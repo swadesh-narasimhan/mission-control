@@ -8,7 +8,7 @@ Pages rotate every 6 s (headlines get 12 s, the bus page 9 s) with a horizontal 
 |---|------|--------|---------|
 | 1 | Clock: Singapore + India, time and date | device clock (`Intl`) | 1 s |
 | 2 | Bus minimap: dot-matrix map of Pasir Panjang Rd and the surrounding roads with the routes of 10/30/51/143/183/188/200 traced, approaching buses as pulsing dots (buses off the map as edge arrows), next/then arrivals for stops 16081 Aft Palm Green Condo + 16089 Aft Clementi Rd, crowding colour | arrivelah (busrouter.sg, LTA data); map © OpenStreetMap | 30 s |
-| 3 | SKY: dot-matrix map of India to Southeast Asia (day/night shaded), the SIN-BLR great-circle route, live SIN⇄BLR flights with heading (flight number on the map; portrait adds a board with altitude or last-seen time), M4.5+ quakes inside the map (24 h). Flights out of receiver range (most of the Bay of Bengal) keep their last real fix, dimmed, with its time | adsb.lol (via your CORS proxy), adsbdb routes, USGS; coastline Natural Earth | 60 s / 5 min |
+| 3 | SKY: dot-matrix map of India to Southeast Asia (day/night shaded), the SIN-BLR great-circle route, live SIN⇄BLR flights with heading (flight number on the map; portrait adds a board with altitude or last-seen time), every other Singapore⇄India flight as a smaller, dimmer dot labelled airline + Indian city (e.g. `SQ MAA`, `6E TRZ`), M4.5+ quakes inside the map (24 h). Flights out of receiver range (most of the Bay of Bengal) keep their last real fix, dimmed, with its time | adsb.lol (via your CORS proxy), adsbdb routes, USGS; coastline Natural Earth | 60 s / 5 min |
 | 4 | FX: USD/INR and SGD/INR, ~6-week sparkline, ECB rate date, optional alert thresholds | Frankfurter (ECB) | 1 h |
 | 5 | Weather, built to read from a distance: big icon + temperature with feels-like, the condition, then icons for rain chance, high/low, sunrise/sunset, plus colour-coded AQI, and the next 6 hours as weather icons; `RAIN ~25M` when rain is close | Open-Meteo forecast + air quality (CC BY 4.0) | 15 / 30 min |
 | 6 | Headlines (scrolling) | your RSS feed | 10 min |
@@ -137,7 +137,7 @@ The feed URL works: it returns HTTP 200 and valid RSS. But it sends **no `Access
 
 | API | Browser fetch | Notes |
 |---|---|---|
-| adsb.lol `/v2/point`, `/v2/callsign` | ❌ no CORS | Needs the proxy. Tested 22 Nov: ~50 aircraft within 250 nm of SIN and of BLR, **0** over the middle of the Bay of Bengal (no receivers). |
+| adsb.lol `/v2/point`, `/v2/callsign` | ❌ no CORS | Needs the proxy. Throttles bursts (HTTP 429 + cool-down), so the app paces calls ~1.1 s apart: 7 receiver circles (SIN, BLR, MAA, HYD, BOM, DEL, CCU) per minute. Tested 22 Nov: ~50 aircraft within 250 nm of SIN and of BLR, **0** over the middle of the Bay of Bengal (no receivers). |
 | adsbdb `/v0/callsign` | ✅ CORS `*` | Callsign → route (e.g. SIA502 = SIN→BLR, IGO1005 = BLR→SIN). Lookups are cached for 3 days. |
 | USGS `4.5_day.geojson` | ✅ CORS `*` | |
 | Frankfurter `api.frankfurter.dev/v1` | ✅ CORS `*` | The old `api.frankfurter.app` now 301-redirects here. |
