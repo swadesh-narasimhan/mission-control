@@ -3,7 +3,7 @@
  * offline and instantly. Cross-origin API calls are NOT intercepted; the app
  * keeps its own last-good copies in localStorage.
  * Bump CACHE when you deploy changes. */
-const CACHE = 'mc-shell-v13';
+const CACHE = 'mc-shell-v14';
 const ASSETS = [
   './',
   'index.html',
@@ -19,7 +19,9 @@ const ASSETS = [
 ];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting()));
+  // cache: 'reload' bypasses the browser's HTTP cache (GitHub Pages allows 10 min), so an update never mixes
+  // a new file with an old one.
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS.map((u) => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (e) => {
@@ -39,7 +41,8 @@ self.addEventListener('fetch', (e) => {
   e.respondWith((async () => {
     const cache = await caches.open(CACHE);
     const hit = await cache.match(req, { ignoreSearch: true });
-    const net = fetch(req)
+    const fresh = req.mode === 'navigate' ? new Request(url.href, { cache: 'no-cache', credentials: 'same-origin' }) : new Request(req, { cache: 'no-cache' });
+    const net = fetch(fresh)
       .then((res) => {
         if (res && res.ok && res.type === 'basic') cache.put(req, res.clone());
         return res;

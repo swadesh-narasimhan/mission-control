@@ -2,7 +2,7 @@
 
 An always-on desk display for a Galaxy M07 (or any Android phone running Chrome). It is a static PWA with no build step and no dependencies at runtime. Everything is drawn on a `<canvas>` in a VFD dot-matrix style using a hand-made 5×7 font, and it works offline after the first load.
 
-Pages rotate every 6 s (headlines get 12 s, the bus page 9 s) with a horizontal slide:
+Pages rotate every 6 s (headlines get 12 s, the bus page 9 s). Page changes are VFD-style, not a slide: the old page's dots decay out (~0.1 s), then the new page is drawn in one character column at a time (~0.25 s) from the side you swiped toward:
 
 | # | Page | Source | Refresh |
 |---|------|--------|---------|
@@ -56,7 +56,7 @@ Then open http://localhost:8090. Any static server works; the service worker nee
 
 *No Actions?* Copy the **contents** of `www/` into a repo's root and choose **Source: Deploy from a branch → main / (root)**.
 
-**After changing the code**, bump `CACHE` in `www/sw.js` (e.g. `mc-shell-v2`). Otherwise phones keep the old cached shell; it updates on the next launch after that.
+**After changing the code**, bump `CACHE` in `www/sw.js` (e.g. `mc-shell-v15`). The running ticker checks for a new version every hour and reloads itself once it has it (waiting if Settings, a preview or a message banner is open). The service worker fetches files with `cache: 'reload'`/`no-cache`, so an update can't mix a new file with an old one from the browser's 10-minute HTTP cache.
 
 ## Install on the Galaxy M07
 

@@ -5,8 +5,8 @@
  * when nothing moved. */
 'use strict';
 (function () {
-  const APP_VERSION = '1.6.1';
-  const SLIDE_MS = 520;
+  const APP_VERSION = '1.7.0';
+  const FADE_MS = 110, WIPE_MS = 240; // page change: phosphor decay, then a column-by-column redraw
   const LONGPRESS_MS = 650;
 
   /* ================================================================ storage */
@@ -598,17 +598,19 @@ _ 00000 00000 00000 00000 00000 00000 11111
     return norm(e.message).slice(0, 48);
   }
   async function runSource(k) {
-    const s = SRC[k], st = ST[k];
+    const s = SRC[k], st = ST[k], gen = st.gen || 0;
     st.busy = true; st.tried = true;
     try {
       const u = s.fetch ? null : s.url();
       const raw = s.fetch ? await s.fetch() : Array.isArray(u) ? await Promise.all(u.map((x) => fetchWithTimeout(x, s.timeout, s.text)))
         : await fetchWithTimeout(u, s.timeout, s.text);
+      if ((st.gen || 0) !== gen) { st.next = 0; return; } // source changed mid-flight (e.g. new feed): drop this result
       const data = s.parse(raw, st.data);
       st.data = data; st.ts = Date.now(); st.fails = 0; st.err = '';
       LS.set(CK + k, { data, ts: st.ts });
       st.next = Date.now() + s.every;
     } catch (e) {
+      if ((st.gen || 0) !== gen) { st.next = 0; return; }
       st.fails++; st.err = shortErr(e);
       const back = Math.min(s.retry * Math.pow(2, st.fails - 1), Math.max(s.every, 300e3));
       st.next = Date.now() + back * (0.85 + Math.random() * 0.3);
@@ -1132,10 +1134,9 @@ _ 00000 00000 00000 00000 00000 00000 11111
         g.beginPath(); g.arc(x, y, Math.max(1.5, u * 0.55), 0, Math.PI * 2); g.fill();
       }
     }
-    const blink = ((ts / 1000) | 0) % 2 === 0;
     for (const hm of HOMES) {
       const [x, y] = skyXY(G, hm.lon, hm.lat);
-      g.strokeStyle = PAL.home; g.lineWidth = Math.max(1, u * 0.35); g.globalAlpha = blink ? 1 : 0.5;
+      g.strokeStyle = PAL.home; g.lineWidth = Math.max(1, u * 0.35); g.globalAlpha = 0.9;
       g.strokeRect(x - u * 1.2, y - u * 1.2, u * 2.4, u * 2.4); g.globalAlpha = 1;
     }
     const arrow = (x, y, trk, r, col) => {
@@ -2269,7 +2270,6 @@ _ 00000 00000 00000 00000 00000 00000 11111
 
   /* ============================================================ frame loop */
   let raf = 0, lastTs = 0;
-  const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
   function frame(ts) {
     raf = requestAnimationFrame(frame);
     if (lastTs && ts - lastTs < 1000 / 30 - 4) return; // 30 fps cap
@@ -2298,11 +2298,28 @@ _ 00000 00000 00000 00000 00000 00000 11111
 
     ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
     if (trans) {
-      const t = Math.min(1, (ts - trans.t0) / SLIDE_MS), e = ease(t);
-      const dx = Math.round(e * W) * trans.dir;
-      drawPage(pages[trans.from], -dx, now, ts, dt);
-      drawPage(pages[trans.to], trans.dir * W - dx, now, ts, dt);
-      if (t >= 1) { cur = trans.to; trans = null; dwellAcc = 0; forceDraw = true; }
+      /* VFD-style page change: the old page's dots decay out (~110 ms), then the new page is driven in one
+         character column at a time (~240 ms) with a briefly over-bright leading column. No sliding. */
+      const el = ts - trans.t0;
+      if (el < FADE_MS) {
+        const a = 1 - el / FADE_MS;
+        ctx.globalAlpha = a * a;
+        drawPage(pages[trans.from], 0, now, ts, dt, true);
+        ctx.globalAlpha = 1;
+      } else {
+        const t = Math.min(1, (el - FADE_MS) / WIPE_MS), step = 6 * L.s1;
+        const cols = Math.ceil(L.cw / step), wv = Math.min(L.cw, Math.ceil(t * cols) * step);
+        const x0 = trans.dir > 0 ? L.cx : L.cx + L.cw - wv;
+        drawPage(pages[trans.to], 0, now, ts, dt, false, [x0, wv]);
+        if (t < 1 && wv > 0) {
+          const ex = trans.dir > 0 ? x0 + wv - step : x0;
+          ctx.save(); ctx.beginPath(); ctx.rect(ex, L.cy, step, L.ch); ctx.clip();
+          ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = 0.4;
+          ctx.drawImage(layerFor(pages[trans.to], now).c, L.cx, L.cy);
+          ctx.restore();
+        }
+        if (t >= 1) { cur = trans.to; trans = null; dwellAcc = 0; forceDraw = true; }
+      }
     } else drawPage(pages[cur], 0, now, ts, dt);
     drawBanner(now);
     ctx.drawImage(hc, 0, 0);
@@ -2318,11 +2335,12 @@ _ 00000 00000 00000 00000 00000 00000 11111
   let firstDrawn = false, drawnFrames = 0;
   const dynLast = {};
   let lastHc = null, lastHk = null, lastFk = null;
-  function drawPage(id, offX, now, ts, dt) {
+  function drawPage(id, offX, now, ts, dt, staticOnly, clipX) {
     const l = layerFor(id, now);
+    if (clipX) { ctx.save(); ctx.beginPath(); ctx.rect(clipX[0], L.cy, clipX[1], L.ch); ctx.clip(); }
     ctx.drawImage(l.c, L.cx + offX, L.cy);
     const P = PAGES[id];
-    if (P.dyn && (!P.dynOn || P.dynOn())) {
+    if (!staticOnly && P.dyn && (!P.dynOn || P.dynOn())) {
       ctx.save();
       ctx.beginPath(); ctx.rect(L.cx, L.cy, L.cw, L.ch); ctx.clip();
       ctx.translate(L.cx + offX, L.cy);
@@ -2330,6 +2348,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
       dynLast[id] = ts;
       ctx.restore();
     }
+    if (clipX) ctx.restore();
   }
   function go(dir) {
     if (pages.length < 2) return;
@@ -2680,7 +2699,7 @@ _ 00000 00000 00000 00000 00000 00000 11111
   function resetSource(k) {
     LS.del(CK + k);
     Object.assign(ST[k], { data: null, ts: 0, fails: 0, err: '', next: 0, tried: false });
-    ST[k].ver++;
+    ST[k].ver++; ST[k].gen = (ST[k].gen || 0) + 1;
   }
 
   /* ============================================================ lifecycle */
@@ -2704,7 +2723,19 @@ _ 00000 00000 00000 00000 00000 00000 11111
   checkRestoreLink();
 
   if ('serviceWorker' in navigator && !isNative() && location.protocol !== 'file:') {
-    window.addEventListener('load', () => { navigator.serviceWorker.register('sw.js').catch(() => { /* offline shell unavailable */ }); });
+    window.addEventListener('load', () => {
+      const hadController = !!navigator.serviceWorker.controller;
+      navigator.serviceWorker.register('sw.js')
+        .then((reg) => setInterval(() => reg.update().catch(() => {}), 3600e3)) // always-on: look for updates hourly
+        .catch(() => { /* offline shell unavailable */ });
+      let reloading = false;
+      navigator.serviceWorker.addEventListener('controllerchange', () => { // a new version took over
+        if (!hadController || reloading) return;                          // (first install: nothing to refresh)
+        reloading = true;
+        const go2 = () => { if (settingsOpen || player.state !== 'idle' || banner) { setTimeout(go2, 30e3); return; } location.reload(); };
+        go2();
+      });
+    });
   }
   // test hook (harmless in production): lets the verifier jump to a page
   window.__mc = { go: (id) => { const i = pages.indexOf(id); if (i >= 0) { cur = i; trans = null; dwellAcc = 0; paused = true; forceDraw = true; } }, state: ST, pages: () => pages.slice(), drawn: () => drawnFrames, sleeping: () => sleeping, remote: () => remoteState, mode: LAUNCH_MODE, cmd: (m) => handleRemote(m), player: () => ({ state: player.state, err: player.err, t: player.audio ? player.audio.currentTime : 0, peak: Math.max(...peakLv) }), art: () => artMem.size, alerts: () => alertsNow(Date.now()), banner: () => !!banner, current: () => pages[trans ? trans.to : cur] };
